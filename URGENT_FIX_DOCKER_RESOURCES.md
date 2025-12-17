@@ -8,6 +8,7 @@ Container memory usage: 3.08GB / 0B
 ```
 
 **Nghĩa là:**
+
 - Docker Desktop chưa được cấp CPU cores
 - Docker Desktop chưa được cấp RAM
 - Đang chạy với resources mặc định (quá thấp)
@@ -31,6 +32,7 @@ Settings → Resources → Advanced
 ### BƯỚC 3: Cấu Hình Resources (QUAN TRỌNG!)
 
 **Minimum Settings (để chạy được 10K batch):**
+
 ```
 CPUs: 4 cores
 Memory: 6 GB
@@ -39,6 +41,7 @@ Disk image size: 60 GB
 ```
 
 **Recommended Settings (chạy ổn định 50K batch):**
+
 ```
 CPUs: 6 cores (hoặc tất cả trừ 2)
 Memory: 8-10 GB
@@ -47,6 +50,7 @@ Disk image size: 80 GB
 ```
 
 **Optimal Settings (nếu máy có 16GB+ RAM):**
+
 ```
 CPUs: 6-8 cores
 Memory: 12 GB
@@ -66,6 +70,7 @@ docker info | findstr CPUs
 ```
 
 Expected output:
+
 ```
 Total Memory: 8 GiB         <- Phải > 6GB
 CPUs: 4                     <- Phải >= 4
@@ -76,6 +81,7 @@ CPUs: 4                     <- Phải >= 4
 ## 🎯 SAU KHI TĂNG RESOURCES
 
 ### Option A: Nếu cấp được 8GB+ RAM
+
 👉 **Chạy lại Super Safe Batch (10K test)**
 
 ```cmd
@@ -91,6 +97,7 @@ scripts\run_super_safe_batch.bat
 ```
 
 **Kết quả mong đợi:**
+
 - Test batch (10K) sẽ chạy thành công
 - Tiếp tục với 3 batches còn lại
 - Total: 4-6 giờ
@@ -98,6 +105,7 @@ scripts\run_super_safe_batch.bat
 ---
 
 ### Option B: Nếu chỉ cấp được 4-6GB RAM
+
 👉 **Chạy Ultra Mini Batch (5K)**
 
 ```cmd
@@ -110,18 +118,19 @@ scripts\run_super_safe_batch.bat
 ## 🔍 KIỂM TRA MÁY CỦA BẠN
 
 ### Xem tổng RAM của máy:
+
 ```cmd
 systeminfo | findstr "Total Physical Memory"
 ```
 
 ### Khuyến nghị theo RAM:
 
-| RAM Máy | Docker RAM | CPU Cores | Batch Size | Risk |
-|---------|-----------|-----------|------------|------|
-| 8 GB | 4 GB | 2 | 5K | Medium |
-| 12 GB | 6 GB | 4 | 10K | Low |
-| 16 GB | 8 GB | 4-6 | 25K | Very Low |
-| 32 GB | 12 GB | 6-8 | 50K | Safe |
+| RAM Máy | Docker RAM | CPU Cores | Batch Size | Risk     |
+| ------- | ---------- | --------- | ---------- | -------- |
+| 8 GB    | 4 GB       | 2         | 5K         | Medium   |
+| 12 GB   | 6 GB       | 4         | 10K        | Low      |
+| 16 GB   | 8 GB       | 4-6       | 25K        | Very Low |
+| 32 GB   | 12 GB      | 6-8       | 50K        | Safe     |
 
 ---
 
@@ -130,6 +139,7 @@ systeminfo | findstr "Total Physical Memory"
 **KHÔNG NÊN** chạy Ultra Mini Batch (5K) nếu chưa thử tăng Docker resources!
 
 **LÝ DO:**
+
 1. Tăng resources = GIẢI PHÁP CĂN BẢN
 2. Ultra Mini Batch = WORKAROUND, chạy lâu hơn (24 batches vs 4 batches)
 3. Sau khi tăng RAM, 10K batch sẽ chạy tốt
@@ -139,6 +149,7 @@ systeminfo | findstr "Total Physical Memory"
 ## 📝 ACTION PLAN CHO BẠN
 
 ### ✅ STEP 1: TĂNG DOCKER RESOURCES (5 phút)
+
 ```
 Docker Desktop → Settings → Resources
 → CPUs: 4-6
@@ -147,24 +158,28 @@ Docker Desktop → Settings → Resources
 ```
 
 ### ✅ STEP 2: VERIFY
+
 ```cmd
 docker info | findstr Memory
 docker info | findstr CPUs
 ```
 
 ### ✅ STEP 3: RESTART SPARK
+
 ```cmd
 docker restart spark-master spark-worker-1 spark-worker-2
 timeout /t 15 /nobreak
 ```
 
 ### ✅ STEP 4: RUN AGAIN
+
 ```cmd
 cd d:\DoAn_TH_BIGDATA
 scripts\run_super_safe_batch.bat
 ```
 
 ### ✅ STEP 5: MONITOR
+
 ```cmd
 # Terminal mới
 docker stats
@@ -191,6 +206,7 @@ docker stats
 ## 💡 NEXT STEPS
 
 **BÂY GIỜ:**
+
 1. Mở Docker Desktop Settings
 2. Tăng Memory lên 8GB (minimum 6GB)
 3. Tăng CPUs lên 4 cores (minimum)
@@ -199,4 +215,3 @@ docker stats
 
 **SAU ĐÓ:**
 Tôi sẽ hướng dẫn chạy lại batch với resources mới! 🚀
-

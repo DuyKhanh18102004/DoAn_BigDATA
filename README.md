@@ -23,13 +23,16 @@ Hệ thống phát hiện Deepfake sử dụng **Distributed Big Data Processing
 ## 🎯 Tổng Quan
 
 ### Mục Tiêu
+
 Xây dựng hệ thống **phân tán** để:
+
 - ✅ Xử lý **120,000 images** trên HDFS
 - ✅ Extract features sử dụng **ResNet50** (distributed inference)
 - ✅ Train ML models với **Spark MLlib**
 - ✅ Đạt accuracy > 85% trong việc phát hiện deepfake
 
 ### Công Nghệ Sử Dụng
+
 - **Storage**: Hadoop HDFS (distributed file system)
 - **Processing**: Apache Spark (distributed computing)
 - **ML**: PyTorch (ResNet50) + Spark MLlib (RandomForest, LogisticRegression)
@@ -71,11 +74,13 @@ Xây dựng hệ thống **phân tán** để:
 ## 💻 Yêu Cầu Hệ Thống
 
 ### Hardware
+
 - **CPU**: 4+ cores
 - **RAM**: 16GB+ (khuyến nghị 32GB)
 - **Disk**: 50GB+ free space
 
 ### Software
+
 - **Docker Desktop** (Windows/Mac) hoặc **Docker + Docker Compose** (Linux)
 - **Python** 3.8+
 - **Git**
@@ -83,22 +88,26 @@ Xây dựng hệ thống **phân tán** để:
 ## 🚀 Cài Đặt
 
 ### 1. Clone Repository
+
 ```bash
 git clone https://github.com/your-username/DoAn_BigDATA.git
 cd DoAn_BigDATA
 ```
 
 ### 2. Start Docker Services
+
 ```bash
 docker-compose up -d
 ```
 
 Kiểm tra containers:
+
 ```bash
 docker-compose ps
 ```
 
 Expected output:
+
 ```
 NAME                STATUS
 namenode            Up
@@ -111,6 +120,7 @@ spark-history       Up
 ```
 
 ### 3. Setup HDFS Directories
+
 ```bash
 bash scripts/setup_hdfs.sh
 ```
@@ -184,6 +194,7 @@ DoAn_TH_BIGDATA/
 ### Quick Test (100 Images)
 
 **1. Prepare test dataset:**
+
 ```bash
 # Copy 100 images (50 REAL + 50 FAKE)
 mkdir -p Dataset_Test/train/REAL
@@ -192,6 +203,7 @@ mkdir -p Dataset_Test/train/FAKE
 ```
 
 **2. Run test pipeline:**
+
 ```bash
 bash scripts/run_test_100_images.sh
 ```
@@ -201,6 +213,7 @@ Expected time: ~30 minutes
 ### Full Pipeline (120K Images)
 
 **1. Upload data to HDFS:**
+
 ```bash
 python src/1_ingestion/upload_to_hdfs.py \
     --local_path data/train \
@@ -208,6 +221,7 @@ python src/1_ingestion/upload_to_hdfs.py \
 ```
 
 **2. Extract features:**
+
 ```bash
 docker exec -it spark-master /opt/spark/bin/spark-submit \
     --master spark://spark-master:7077 \
@@ -221,6 +235,7 @@ docker exec -it spark-master /opt/spark/bin/spark-submit \
 Expected time: 6-7 hours
 
 **3. Train ML models:**
+
 ```bash
 docker exec -it spark-master /opt/spark/bin/spark-submit \
     --master spark://spark-master:7077 \
@@ -228,6 +243,7 @@ docker exec -it spark-master /opt/spark/bin/spark-submit \
 ```
 
 **4. Evaluate:**
+
 ```bash
 docker exec -it spark-master /opt/spark/bin/spark-submit \
     --master spark://spark-master:7077 \
@@ -266,6 +282,7 @@ docker exec -it spark-master /opt/spark/bin/spark-submit \
 ## 📊 Monitoring
 
 ### Spark History Server
+
 ```bash
 # Access at http://localhost:18080
 
@@ -274,12 +291,14 @@ bash scripts/check_spark_history.sh
 ```
 
 **Screenshots cần capture:**
+
 - Job timeline
 - Stage details (parallel tasks)
 - Executor metrics
 - DAG visualization
 
 ### HDFS NameNode UI
+
 ```bash
 # Access at http://localhost:9870
 
@@ -290,6 +309,7 @@ docker exec namenode hdfs dfs -ls -R /user/data
 ## 🧪 Testing
 
 ### Run Unit Tests
+
 ```bash
 # All tests
 python -m pytest tests/
@@ -302,6 +322,7 @@ python -m pytest tests/ --cov=src
 ```
 
 ### Test Configuration
+
 ```bash
 python tests/test_config.py
 ```
@@ -309,6 +330,7 @@ python tests/test_config.py
 ## 📚 Documentation
 
 Xem chi tiết tại:
+
 - **[ARCHITECTURE_ANALYSIS.md](ARCHITECTURE_ANALYSIS.md)** - Kiến trúc chi tiết
 - **[API Documentation](docs/API.md)** - API reference
 - **[Troubleshooting Guide](docs/TROUBLESHOOTING.md)** - Xử lý lỗi
@@ -316,11 +338,13 @@ Xem chi tiết tại:
 ## 🎯 Expected Results
 
 ### Test (100 images)
+
 - **Accuracy**: ~70-80%
 - **Processing time**: ~30 minutes
 - **Feature dimension**: 2048 (ResNet50)
 
 ### Full (120K images)
+
 - **Accuracy**: > 85%
 - **Processing time**: ~6-7 hours
 - **Models**: RandomForest + LogisticRegression
@@ -330,6 +354,7 @@ Xem chi tiết tại:
 ### Common Issues
 
 **1. Docker containers not starting:**
+
 ```bash
 docker-compose down
 docker-compose up -d
@@ -337,6 +362,7 @@ docker-compose logs -f
 ```
 
 **2. HDFS connection timeout:**
+
 ```bash
 # Check namenode
 docker exec namenode hdfs dfsadmin -report
@@ -346,6 +372,7 @@ docker restart namenode datanode-1 datanode-2
 ```
 
 **3. Spark job fails:**
+
 ```bash
 # Check Spark logs
 docker logs spark-master
