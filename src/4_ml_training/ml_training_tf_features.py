@@ -1,15 +1,12 @@
 #!/usr/bin/env python3
-"""
-ML Training với TensorFlow MobileNetV2 Features - PHIÊN BẢN TUNED HYPERPARAM
-- Chỉ chỉnh hyperparam để tăng accuracy (không thêm scaler, không cache thừa)
-- An toàn với RAM thấp (driver 2g)
-- Giữ nguyên cấu trúc code gốc, chỉ thay vài giá trị
+"""ML Training with TensorFlow MobileNetV2 Features.
+
+Tuned hyperparameters for improved accuracy.
 """
 
 from pyspark.sql import SparkSession, Row
 from pyspark.sql.functions import (
-    col, lit, when, avg as spark_avg,
-    hash as spark_hash, concat_ws
+    col, lit, when, hash as spark_hash, concat_ws
 )
 from pyspark.sql.types import StringType
 from pyspark.ml.classification import LogisticRegression
@@ -19,10 +16,10 @@ import time
 import gc
 
 print("="*80)
-print("📈 ML TRAINING - TENSORFLOW MOBILENETV2 FEATURES (TUNED HYPERPARAM)")
+print("ML TRAINING - TENSORFLOW MOBILENETV2 FEATURES")
 print("="*80)
 
-# Initialize Spark (giữ nguyên config cũ để tránh OOM)
+# Initialize Spark
 spark = SparkSession.builder \
     .appName("ML_Training_TF_Features") \
     .config("spark.driver.memory", "2g") \
@@ -34,6 +31,9 @@ spark = SparkSession.builder \
     .config("spark.memory.fraction", "0.6") \
     .config("spark.cleaner.periodicGC.interval", "30s") \
     .config("spark.rdd.compress", "true") \
+    .config("spark.eventLog.enabled", "true") \
+    .config("spark.eventLog.dir", "hdfs://namenode:8020/spark-logs") \
+    .config("spark.history.fs.logDirectory", "hdfs://namenode:8020/spark-logs") \
     .getOrCreate()
 
 spark.sparkContext.setLogLevel("WARN")
@@ -51,26 +51,34 @@ NUM_TRAIN_BATCHES = 50
 VALIDATION_RATIO = 0.2
 SEED = 42
 
-# LR Hyperparameters - ĐÃ TUNED ĐỂ TĂNG ACCURACY
+# LR Hyperparameters
 LR_PARAMS = {
-    "maxIter": 300,          # Tăng từ 100 → 300 để converge tốt hơn
-    "regParam": 0.001,       # Giảm mạnh từ 0.01 → 0.001 (học kỹ hơn, tăng accuracy nhiều nhất)
-    "elasticNetParam": 0.0,  # Giữ L2 regularization
-    "tol": 1e-5,             # Nới lỏng từ 1e-6 → 1e-5 (nhanh hơn, ít ảnh hưởng accuracy)
+    "maxIter": 300,
+    "regParam": 0.001,
+    "elasticNetParam": 0.0,
+    "tol": 1e-5,
     "fitIntercept": True,
-    "standardization": True, # Giữ built-in standardization
+    "standardization": True,
     "threshold": 0.5
 }
 
 def force_cleanup():
-    """Aggressive memory cleanup"""
+    """Aggressive memory cleanup."""
     spark.catalog.clearCache()
     for _ in range(3):
         gc.collect()
     time.sleep(1)
 
 def create_image_id(df, source_type):
-    """Tạo unique image ID"""
+    """Create unique image ID.
+    
+    Args:
+        df: DataFrame with features column
+        source_type: Source type identifier
+        
+    Returns:
+        DataFrame with added image_id column
+    """
     return df.withColumn(
         "image_id",
         concat_ws("_", 
@@ -79,12 +87,8 @@ def create_image_id(df, source_type):
         ).cast(StringType())
     )
 
-# ============================================================================
-# STEP 1: Load Training Data
-# ============================================================================
-
 print("\n" + "="*80)
-print(f"📂 STEP 1: Loading Training Data ({NUM_TRAIN_BATCHES} batches)")
+print(f"STEP 1: Loading Training Data ({NUM_TRAIN_BATCHES} batches)")
 print("="*80)
 
 all_data = []

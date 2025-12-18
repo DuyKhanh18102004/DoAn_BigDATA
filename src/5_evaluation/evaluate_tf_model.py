@@ -1,10 +1,7 @@
 #!/usr/bin/env python3
-"""
-Step 4: Evaluate Model - Complete Evaluation Script
-- Load test predictions từ HDFS
-- Tính các metrics: Accuracy, Precision, Recall, F1, AUC-ROC
-- Vẽ Confusion Matrix, ROC Curve
-- Save báo cáo đầy đủ
+"""Model Evaluation Script.
+
+Complete evaluation with metrics calculation and error analysis.
 """
 
 from pyspark.sql import SparkSession, Row
@@ -13,83 +10,65 @@ from pyspark.ml.evaluation import MulticlassClassificationEvaluator, BinaryClass
 import time
 
 print("="*80)
-print("📊 STEP 4: MODEL EVALUATION")
+print("MODEL EVALUATION")
 print("="*80)
 
-# Initialize Spark
 spark = SparkSession.builder \
     .appName("Model_Evaluation") \
     .config("spark.driver.memory", "2g") \
+    .config("spark.eventLog.enabled", "true") \
+    .config("spark.eventLog.dir", "hdfs://namenode:8020/spark-logs") \
+    .config("spark.history.fs.logDirectory", "hdfs://namenode:8020/spark-logs") \
     .getOrCreate()
 
 spark.sparkContext.setLogLevel("WARN")
 eval_start = time.time()
 
-# ============================================================================
-# CONFIGURATION
-# ============================================================================
-
 HDFS_BASE = "hdfs://namenode:8020/user/data"
 RESULTS_BASE = f"{HDFS_BASE}/results_tf"
 
-# ============================================================================
-# STEP 1: Load Test Predictions
-# ============================================================================
-
 print("\n" + "="*80)
-print("📂 STEP 1: Loading Test Predictions")
+print("STEP 1: Loading Test Predictions")
 print("="*80)
 
 test_pred_path = f"{RESULTS_BASE}/test_predictions"
-print(f"📂 Loading from: {test_pred_path}")
+print(f"Loading from: {test_pred_path}")
 
 df_predictions = spark.read.parquet(test_pred_path)
 df_predictions = df_predictions.cache()
 
 total_samples = df_predictions.count()
-print(f"✅ Loaded {total_samples:,} test predictions")
+print(f"Loaded {total_samples:,} test predictions")
 
-# Show schema
-print("\n📋 Schema:")
+print("\nSchema:")
 df_predictions.printSchema()
 
-# Show sample
-print("\n📊 Sample predictions:")
+print("\nSample predictions:")
 df_predictions.show(10, truncate=False)
 
-# ============================================================================
-# STEP 2: Calculate Metrics
-# ============================================================================
-
 print("\n" + "="*80)
-print("📊 STEP 2: Calculating Metrics")
+print("STEP 2: Calculating Metrics")
 print("="*80)
 
-# Basic counts
 label_dist = df_predictions.groupBy("label").count().collect()
 pred_dist = df_predictions.groupBy("prediction").count().collect()
 
-print("\n📊 Label Distribution (Ground Truth):")
+print("\nLabel Distribution (Ground Truth):")
 for row in label_dist:
     label_name = "REAL" if row["label"] == 1 else "FAKE"
     pct = 100 * row["count"] / total_samples
-    print(f"   - {label_name} (label={int(row['label'])}): {row['count']:,} ({pct:.1f}%)")
+    print(f"   {label_name} (label={int(row['label'])}): {row['count']:,} ({pct:.1f}%)")
 
-print("\n📊 Prediction Distribution:")
+print("\nPrediction Distribution:")
 for row in pred_dist:
     pred_name = "REAL" if row["prediction"] == 1 else "FAKE"
     pct = 100 * row["count"] / total_samples
-    print(f"   - {pred_name} (pred={int(row['prediction'])}): {row['count']:,} ({pct:.1f}%)")
-
-# ============================================================================
-# STEP 3: Confusion Matrix
-# ============================================================================
+    print(f"   {pred_name} (pred={int(row['prediction'])}): {row['count']:,} ({pct:.1f}%)")
 
 print("\n" + "="*80)
-print("📊 STEP 3: Confusion Matrix")
+print("STEP 3: Confusion Matrix")
 print("="*80)
 
-# Calculate TP, TN, FP, FN
 tp = df_predictions.filter((col("label") == 1) & (col("prediction") == 1)).count()
 tn = df_predictions.filter((col("label") == 0) & (col("prediction") == 0)).count()
 fp = df_predictions.filter((col("label") == 0) & (col("prediction") == 1)).count()
@@ -100,21 +79,16 @@ print("                  FAKE    REAL")
 print(f"Actual  FAKE      {tn:,}    {fp:,}")
 print(f"        REAL      {fn:,}    {tp:,}")
 
-print(f"\n📊 Breakdown:")
-print(f"   ✅ True Positive  (REAL→REAL): {tp:,}")
-print(f"   ✅ True Negative  (FAKE→FAKE): {tn:,}")
-print(f"   ❌ False Positive (FAKE→REAL): {fp:,}")
-print(f"   ❌ False Negative (REAL→FAKE): {fn:,}")
-
-# ============================================================================
-# STEP 4: Calculate All Metrics
-# ============================================================================
+print(f"\nBreakdown:")
+print(f"   True Positive (REAL->REAL):   {tp:,}")
+print(f"   True Negative (FAKE->FAKE):   {tn:,}")
+print(f"   False Positive (FAKE->REAL):  {fp:,}")
+print(f"   False Negative (REAL->FAKE):  {fn:,}")
 
 print("\n" + "="*80)
-print("📊 STEP 4: Performance Metrics")
+print("STEP 4: Performance Metrics")
 print("="*80)
 
-# Manual calculations
 accuracy = (tp + tn) / total_samples
 precision_real = tp / (tp + fp) if (tp + fp) > 0 else 0
 recall_real = tp / (tp + fn) if (tp + fn) > 0 else 0
@@ -124,25 +98,23 @@ precision_fake = tn / (tn + fn) if (tn + fn) > 0 else 0
 recall_fake = tn / (tn + fp) if (tn + fp) > 0 else 0
 f1_fake = 2 * precision_fake * recall_fake / (precision_fake + recall_fake) if (precision_fake + recall_fake) > 0 else 0
 
-# Weighted averages
 total_real = tp + fn
 total_fake = tn + fp
 weighted_precision = (precision_real * total_real + precision_fake * total_fake) / total_samples
 weighted_recall = (recall_real * total_real + recall_fake * total_fake) / total_samples
 weighted_f1 = (f1_real * total_real + f1_fake * total_fake) / total_samples
 
-# Macro averages
 macro_precision = (precision_real + precision_fake) / 2
 macro_recall = (recall_real + recall_fake) / 2
 macro_f1 = (f1_real + f1_fake) / 2
 
-print("\n🎯 OVERALL METRICS:")
+print("\nOVERALL METRICS:")
 print(f"   Accuracy:           {accuracy*100:.2f}%")
 print(f"   Weighted Precision: {weighted_precision*100:.2f}%")
 print(f"   Weighted Recall:    {weighted_recall*100:.2f}%")
 print(f"   Weighted F1-Score:  {weighted_f1*100:.2f}%")
 
-print("\n📊 PER-CLASS METRICS:")
+print("\nPER-CLASS METRICS:")
 print(f"\n   REAL Class (label=1):")
 print(f"      Precision: {precision_real*100:.2f}%")
 print(f"      Recall:    {recall_real*100:.2f}%")
@@ -155,92 +127,73 @@ print(f"      Recall:    {recall_fake*100:.2f}%")
 print(f"      F1-Score:  {f1_fake*100:.2f}%")
 print(f"      Support:   {total_fake:,}")
 
-# ============================================================================
-# STEP 5: AUC-ROC (if probability available)
-# ============================================================================
 
 print("\n" + "="*80)
-print("📊 STEP 5: AUC-ROC Score")
+print("STEP 5: AUC-ROC Score")
 print("="*80)
 
 auc_score = None
 if "prob_real" in df_predictions.columns:
-    # Use BinaryClassificationEvaluator
-    from pyspark.ml.evaluation import BinaryClassificationEvaluator
-    
-    # Need rawPrediction column for AUC
     df_for_auc = df_predictions.withColumn("rawPrediction", col("prob_real"))
-    
+
     evaluator_auc = BinaryClassificationEvaluator(
         labelCol="label",
         rawPredictionCol="prob_real",
         metricName="areaUnderROC"
     )
-    
+
     try:
         auc_score = evaluator_auc.evaluate(df_predictions)
         print(f"   AUC-ROC Score: {auc_score:.4f} ({auc_score*100:.2f}%)")
     except Exception as e:
-        print(f"   ⚠️ Could not calculate AUC: {e}")
-        
-    # Calculate AUC-PR
+        print(f"   Could not calculate AUC: {e}")
+
     evaluator_pr = BinaryClassificationEvaluator(
         labelCol="label",
         rawPredictionCol="prob_real",
         metricName="areaUnderPR"
     )
-    
+
     try:
         auc_pr = evaluator_pr.evaluate(df_predictions)
         print(f"   AUC-PR Score:  {auc_pr:.4f} ({auc_pr*100:.2f}%)")
     except Exception as e:
-        print(f"   ⚠️ Could not calculate AUC-PR: {e}")
+        print(f"   Could not calculate AUC-PR: {e}")
 else:
-    print("   ⚠️ Probability column not found, skipping AUC calculation")
-
-# ============================================================================
-# STEP 6: Error Analysis
-# ============================================================================
+    print("   Probability column not found, skipping AUC calculation")
 
 print("\n" + "="*80)
-print("🔍 STEP 6: Error Analysis")
+print("STEP 6: Error Analysis")
 print("="*80)
 
-# False Positives Analysis (FAKE predicted as REAL)
-print(f"\n❌ False Positives (FAKE→REAL): {fp:,}")
+print(f"\nFalse Positives (FAKE->REAL): {fp:,}")
 if "prob_real" in df_predictions.columns:
     fp_samples = df_predictions.filter(
         (col("label") == 0) & (col("prediction") == 1)
     ).select("prob_real")
-    
+
     if fp > 0:
         fp_stats = fp_samples.agg({
             "prob_real": "avg",
         }).collect()[0]
         print(f"   Average confidence: {fp_stats[0]*100:.2f}%")
 
-# False Negatives Analysis (REAL predicted as FAKE)
-print(f"\n❌ False Negatives (REAL→FAKE): {fn:,}")
+print(f"\nFalse Negatives (REAL->FAKE): {fn:,}")
 if "prob_real" in df_predictions.columns:
     fn_samples = df_predictions.filter(
         (col("label") == 1) & (col("prediction") == 0)
     ).select("prob_real")
-    
+
     if fn > 0:
         fn_stats = fn_samples.agg({
             "prob_real": "avg",
         }).collect()[0]
         print(f"   Average confidence: {fn_stats[0]*100:.2f}%")
 
-# ============================================================================
-# STEP 7: Save Evaluation Report
-# ============================================================================
-
 print("\n" + "="*80)
-print("💾 STEP 7: Saving Evaluation Report")
+print("STEP 7: Saving Evaluation Report")
 print("="*80)
 
-# Create metrics summary
 metrics_summary = [
     Row(metric="accuracy", value=float(accuracy)),
     Row(metric="weighted_precision", value=float(weighted_precision)),
@@ -248,6 +201,38 @@ metrics_summary = [
     Row(metric="weighted_f1", value=float(weighted_f1)),
     Row(metric="macro_precision", value=float(macro_precision)),
     Row(metric="macro_recall", value=float(macro_recall)),
+    Row(metric="macro_f1", value=float(macro_f1)),
+    Row(metric="tp", value=int(tp)),
+    Row(metric="tn", value=int(tn)),
+    Row(metric="fp", value=int(fp)),
+    Row(metric="fn", value=int(fn)),
+]
+
+if auc_score is not None:
+    metrics_summary.append(Row(metric="auc_roc", value=float(auc_score)))
+
+df_metrics = spark.createDataFrame(metrics_summary)
+metrics_path = f"{RESULTS_BASE}/evaluation_metrics"
+df_metrics.write.mode("overwrite").parquet(metrics_path)
+print(f"Metrics saved to: {metrics_path}")
+
+eval_time = time.time() - eval_start
+
+print("\n" + "="*80)
+print("EVALUATION COMPLETE")
+print("="*80)
+
+print(f"\nTotal samples evaluated: {total_samples:,}")
+print(f"Evaluation time: {eval_time:.1f}s")
+
+print(f"\nFinal Accuracy: {accuracy*100:.2f}%")
+print(f"F1-Score: {weighted_f1*100:.2f}%")
+
+print("\n" + "="*80)
+
+spark.stop()
+print("Spark session stopped.")
+
     Row(metric="macro_f1", value=float(macro_f1)),
     Row(metric="precision_real", value=float(precision_real)),
     Row(metric="recall_real", value=float(recall_real)),
