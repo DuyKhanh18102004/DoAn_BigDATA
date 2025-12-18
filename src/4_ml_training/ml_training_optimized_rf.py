@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 """
-ML Training - OPTIMIZED Random Forest with Enhanced Hyperparameters
-Train on 5 MIXED batches with powerful RF configuration
-- Fixed: Sử dụng image_id thực thay vì monotonically_increasing_id()
-- Fixed: Lưu probability vectors cho ensemble chính xác
-- Optimized: Chỉ training trên tập train, không dùng test data
-- Optimized: Clean code patterns cho BigData processing
+ML Training - OPTIMIZED Logistic Regression with BATCH PROCESSING
+Train on 100K images using 10K batch processing to avoid OOM
+- Xử lý 10K hình mỗi batch, release memory sau mỗi batch
+- Sử dụng Logistic Regression (nhẹ hơn Random Forest)
+- Memory-safe: Load → Train → Predict → Save → Release
 """
 
 from pyspark.sql import SparkSession
@@ -14,26 +13,33 @@ from pyspark.sql.functions import (
     hash as spark_hash, concat_ws, udf
 )
 from pyspark.sql.types import DoubleType, StringType
-from pyspark.ml.classification import RandomForestClassifier
-from pyspark.ml.evaluation import MulticlassClassificationEvaluator
+from pyspark.ml.classification import LogisticRegression
+from pyspark.ml.feature import StandardScaler
+from pyspark.ml.evaluation import MulticlassClassificationEvaluator, BinaryClassificationEvaluator
 from pyspark.ml.functions import vector_to_array
+from pyspark.ml import Pipeline
 import time
 import gc
 
 print("="*80)
-print("🌲 ML TRAINING - OPTIMIZED RANDOM FOREST")
+print("📈 ML TRAINING - LOGISTIC REGRESSION (10K BATCH PROCESSING)")
 print("="*80)
 
-# Initialize Spark with optimized config
+# Initialize Spark with ULTRA MEMORY-SAFE config
 spark = SparkSession.builder \
-    .appName("ML_Training_Optimized_RF") \
-    .config("spark.driver.memory", "2g") \
-    .config("spark.executor.memory", "2g") \
-    .config("spark.executor.cores", "2") \
-    .config("spark.default.parallelism", "50") \
-    .config("spark.sql.shuffle.partitions", "50") \
+    .appName("ML_Training_LR_BatchProcessing") \
+    .config("spark.driver.memory", "1200m") \
+    .config("spark.executor.memory", "1200m") \
+    .config("spark.executor.cores", "1") \
+    .config("spark.default.parallelism", "10") \
+    .config("spark.sql.shuffle.partitions", "10") \
     .config("spark.sql.adaptive.enabled", "true") \
     .config("spark.sql.adaptive.coalescePartitions.enabled", "true") \
+    .config("spark.memory.fraction", "0.5") \
+    .config("spark.memory.storageFraction", "0.2") \
+    .config("spark.cleaner.periodicGC.interval", "30s") \
+    .config("spark.rdd.compress", "true") \
+    .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer") \
     .getOrCreate()
 
 # Set log level để giảm noise
@@ -69,18 +75,29 @@ def get_probability_at_index(prob_col, index):
 # ============================================================================
 
 HDFS_BASE = "hdfs://namenode:8020/user/data"
-NUM_BATCHES = 5
-VALIDATION_RATIO = 0.2  # 20% cho validation từ train data
+FEATURES_BASE = f"{HDFS_BASE}/features_tf"  # NEW: TensorFlow MobileNetV2 features
+NUM_BATCHES = 50  # 50 batches per category (50K REAL + 50K FAKE = 100K train)
+VALIDATION_RATIO = 0.15  # 15% for validation
 SEED = 42
+BATCH_SIZE = 10000  # Xử lý 10K hình mỗi batch
 
-# Hyperparameters tối ưu
-RF_PARAMS = {
-    "numTrees": 100,
-    "maxDepth": 15,
-    "minInstancesPerNode": 1,
-    "featureSubsetStrategy": "sqrt",
-    "seed": SEED
+# Logistic Regression Hyperparameters - Tối ưu cho deep features
+LR_PARAMS = {
+    "maxIter": 50,            # Giảm để nhanh hơn
+    "regParam": 0.01,         # L2 regularization
+    "elasticNetParam": 0.0,   # 0 = L2
+    "tol": 1e-5,              # Tăng tolerance để converge nhanh hơn
+    "fitIntercept": True,
+    "standardization": True,
+    "threshold": 0.5
 }
+
+def force_cleanup():
+    """Aggressive memory cleanup"""
+    spark.catalog.clearCache()
+    for _ in range(5):
+        gc.collect()
+    time.sleep(2)
 
 # ============================================================================
 # STEP 1: Load và Prepare Training Data từ 5 Batches
@@ -97,13 +114,13 @@ for batch_id in range(1, NUM_BATCHES + 1):
     print(f"\n📦 Loading Batch {batch_id}/{NUM_BATCHES}...")
     
     # Load REAL
-    real_path = f"{HDFS_BASE}/features/train/REAL/batch_{batch_id}"
+    real_path = f"{FEATURES_BASE}/train/REAL/batch_{batch_id}"
     df_real = spark.read.parquet(real_path)
     df_real = create_image_id(df_real, f"REAL_batch{batch_id}")
     real_count = df_real.count()
     
     # Load FAKE  
-    fake_path = f"{HDFS_BASE}/features/train/FAKE/batch_{batch_id}"
+    fake_path = f"{FEATURES_BASE}/train/FAKE/batch_{batch_id}"
     df_fake = spark.read.parquet(fake_path)
     df_fake = create_image_id(df_fake, f"FAKE_batch{batch_id}")
     fake_count = df_fake.count()
@@ -122,8 +139,8 @@ df_train_full = all_train_data[0]
 for df in all_train_data[1:]:
     df_train_full = df_train_full.union(df)
 
-# Repartition để tối ưu xử lý
-df_train_full = df_train_full.repartition(50, "image_id").cache()
+# Repartition nhỏ hơn để tối ưu memory
+df_train_full = df_train_full.repartition(20, "image_id").cache()
 actual_count = df_train_full.count()
 
 print(f"✅ Total training data: {actual_count:,} samples")
@@ -167,10 +184,10 @@ df_train_full.unpersist()
 # ============================================================================
 
 print("\n" + "="*80)
-print("🌲 STEP 3: Training Random Forest Models")
+print("📈 STEP 3: Training Logistic Regression Models")
 print("="*80)
 print("\n🔧 HYPERPARAMETERS:")
-for key, value in RF_PARAMS.items():
+for key, value in LR_PARAMS.items():
     print(f"   - {key}: {value}")
 
 # Lấy unique batches để train riêng biệt (ensemble approach)
@@ -194,20 +211,34 @@ for batch_id in batch_ids:
     batch_count = df_batch_train.count()
     print(f"   📊 Training samples: {batch_count:,}")
     
-    # Train Random Forest
-    print("   🌲 Training Random Forest...")
-    rf = RandomForestClassifier(
-        featuresCol="features",
+    # Step 1: Feature Standardization (QUAN TRỌNG: tăng accuracy cho LR)
+    print("   📏 Standardizing features...")
+    scaler = StandardScaler(
+        inputCol="features",
+        outputCol="scaledFeatures",
+        withStd=True,
+        withMean=True  # Center features around 0
+    )
+    scaler_model = scaler.fit(df_batch_train)
+    df_batch_scaled = scaler_model.transform(df_batch_train)
+    
+    # Step 2: Train Logistic Regression (nhẹ hơn RF rất nhiều!)
+    print("   📈 Training Logistic Regression...")
+    lr = LogisticRegression(
+        featuresCol="scaledFeatures",  # Dùng scaled features
         labelCol="label",
-        **RF_PARAMS
+        predictionCol="prediction",
+        probabilityCol="probability",
+        **LR_PARAMS
     )
     
-    rf_model = rf.fit(df_batch_train)
+    lr_model = lr.fit(df_batch_scaled)
     print("   ✅ Training completed!")
     
-    # Predict trên VALIDATION set (không phải test!)
+    # Predict trên VALIDATION set - cần scale validation data với cùng scaler
     print("   🔮 Predicting on validation set...")
-    predictions = rf_model.transform(df_val)
+    df_val_scaled = scaler_model.transform(df_val)
+    predictions = lr_model.transform(df_val_scaled)
     
     # Lưu predictions với image_id thực (QUAN TRỌNG: không dùng monotonically_increasing_id)
     # Extract probability cho class 1 (REAL) để ensemble averaging
@@ -242,16 +273,26 @@ for batch_id in batch_ids:
     batch_elapsed = time.time() - batch_start
     print(f"   ✅ Model {batch_id} completed in {batch_elapsed:.2f}s")
     
-    # Memory cleanup
+    # AGGRESSIVE Memory cleanup
     df_batch_train.unpersist()
+    df_batch_scaled.unpersist() if 'df_batch_scaled' in dir() else None
     predictions.unpersist()
-    del rf_model
+    del lr_model
+    del scaler_model
+    del predictions
+    del df_batch_train
     spark.catalog.clearCache()
-    gc.collect()
-    time.sleep(2)
+    
+    # Force garbage collection
+    for _ in range(3):
+        gc.collect()
+    
+    # Cooldown ngắn hơn vì LR nhẹ hơn RF
+    print("   ⏳ Cooldown 5s...")
+    time.sleep(5)
 
 print("\n" + "="*80)
-print(f"✅ All {len(batch_ids)} Random Forest models trained!")
+print(f"✅ All {len(batch_ids)} Logistic Regression models trained!")
 print("="*80)
 
 # Show individual accuracies
@@ -291,7 +332,7 @@ for mp in model_predictions[1:]:
     count = df_ensemble.count()
     print(f"   ✅ Joined: {count:,} rows")
 
-df_ensemble = df_ensemble.repartition(20).cache()
+df_ensemble = df_ensemble.repartition(10).cache()
 ensemble_count = df_ensemble.count()
 
 print(f"\n✅ Ensemble data ready: {ensemble_count:,} samples")
@@ -413,8 +454,8 @@ metrics_data = [
     Row(metric="Validation_Samples", value=float(ensemble_count)),
     Row(metric="Training_Samples", value=float(train_count)),
     Row(metric="Num_Models", value=float(len(model_predictions))),
-    Row(metric="NumTrees", value=float(RF_PARAMS["numTrees"])),
-    Row(metric="MaxDepth", value=float(RF_PARAMS["maxDepth"])),
+    Row(metric="MaxIter", value=float(LR_PARAMS["maxIter"])),
+    Row(metric="RegParam", value=float(LR_PARAMS["regParam"])),
     Row(metric="TP", value=float(tp)),
     Row(metric="TN", value=float(tn)),
     Row(metric="FP", value=float(fp)),
@@ -450,7 +491,7 @@ print(f"   - Training metrics: {metrics_path}")
 print(f"   - Model info: {model_info_path}")
 
 print("\n" + "="*80)
-print("🌲 RANDOM FOREST ENSEMBLE - TRAINING RESULTS")
+print("📈 LOGISTIC REGRESSION ENSEMBLE - TRAINING RESULTS")
 print("="*80)
 print(f"📊 Training samples: {train_count:,}")
 print(f"📊 Validation samples: {ensemble_count:,}")
@@ -475,14 +516,14 @@ print("\n" + "="*80)
 print("🏁 TRAINING PIPELINE COMPLETED")
 print("="*80)
 print(f"\n⏱️  Total training time: {pipeline_elapsed/60:.2f} minutes")
-print(f"\n📊 Models trained: {len(model_predictions)} Random Forest models")
+print(f"\n📊 Models trained: {len(model_predictions)} Logistic Regression models")
 print(f"📊 Training strategy: Ensemble with Probability Averaging")
 print(f"📊 Validation split: {VALIDATION_RATIO*100:.0f}%")
 
 print("\n" + "="*80)
 print("🔧 HYPERPARAMETERS")
 print("="*80)
-for key, value in RF_PARAMS.items():
+for key, value in LR_PARAMS.items():
     print(f"   {key}: {value}")
 
 print("\n" + "="*80)
