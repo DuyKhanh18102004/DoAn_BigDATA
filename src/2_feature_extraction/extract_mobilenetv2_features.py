@@ -1,495 +1,475 @@
 #!/usr/bin/env python3
-"""Feature Extraction with MobileNetV2 Pre-trained Model.
+"""Feature Extraction with TensorFlow MobileNetV2.
 
-Extracts 1280-dim features from images using MobileNetV2 model.
-Memory-optimized for low RAM environments with periodic cleanup.
+Memory-optimized feature extraction using MobileNetV2 pre-trained model.
+Extracts 1280-dimensional features from images with periodic garbage collection.
+Saves results to HDFS in batches to manage memory efficiently.
 """
 
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, udf, lit
+from pyspark.sql.functions import col
 from pyspark.ml.linalg import Vectors, VectorUDT
+from pyspark.sql.types import StructType, StructField, StringType, IntegerType
 import numpy as np
 from PIL import Image
 from io import BytesIO
 import time
 import gc
 import os
-import psutil
+import sys
 
-# Memory tracking utilities
+# ============================================================================
+# MEMORY MONITORING UTILITIES
+# ============================================================================
 
-def get_process_memory_mb():
-    """Get current process memory in MB."""
-    process = psutil.Process(os.getpid())
-    return process.memory_info().rss / 1024 / 1024
+def get_memory_usage():
+    """Get current process memory usage in MB.
+    
+    Returns:
+        dict: Dictionary with 'rss', 'vms', and 'percent' keys.
+    """
+    try:
+        import psutil
+        process = psutil.Process(os.getpid())
+        mem_info = process.memory_info()
+        return {
+            'rss': mem_info.rss / 1024 / 1024,
+            'vms': mem_info.vms / 1024 / 1024,
+            'percent': process.memory_percent()
+        }
+    except ImportError:
+        return {'rss': 0, 'vms': 0, 'percent': 0}
 
-def get_system_memory_info():
-    """Get system memory information."""
-    mem = psutil.virtual_memory()
-    return {
-        'total_gb': mem.total / 1024**3,
-        'available_gb': mem.available / 1024**3,
-        'used_gb': mem.used / 1024**3,
-        'percent': mem.percent
-    }
 
-def print_memory_status(prefix=""):
-    """Print current memory status."""
-    proc_mem = get_process_memory_mb()
-    sys_mem = get_system_memory_info()
-    print(f"{prefix}Process Memory: {proc_mem:.1f} MB")
-    print(f"{prefix}System Memory: {sys_mem['used_gb']:.2f}/{sys_mem['total_gb']:.2f} GB ({sys_mem['percent']:.1f}% used)")
-    print(f"{prefix}Available: {sys_mem['available_gb']:.2f} GB")
+def get_system_memory():
+    """Get system memory information in GB.
+    
+    Returns:
+        dict: Dictionary with 'total', 'available', 'used', and 'percent' keys.
+    """
+    try:
+        import psutil
+        mem = psutil.virtual_memory()
+        return {
+            'total': mem.total / 1024 / 1024 / 1024,
+            'available': mem.available / 1024 / 1024 / 1024,
+            'used': mem.used / 1024 / 1024 / 1024,
+            'percent': mem.percent
+        }
+    except ImportError:
+        return {'total': 0, 'available': 0, 'used': 0, 'percent': 0}
+
+
+def print_memory_status(label=""):
+    """Print current memory status with label.
+    
+    Args:
+        label: Status label to display.
+        
+    Returns:
+        tuple: (process_memory_dict, system_memory_dict)
+    """
+    proc_mem = get_memory_usage()
+    sys_mem = get_system_memory()
+    print(f"   Memory [{label}]:")
+    print(f"      Process: RSS={proc_mem['rss']:.1f}MB, VMS={proc_mem['vms']:.1f}MB ({proc_mem['percent']:.1f}%)")
+    print(f"      System:  Used={sys_mem['used']:.2f}GB / {sys_mem['total']:.2f}GB ({sys_mem['percent']:.1f}%)")
+    print(f"      Available: {sys_mem['available']:.2f}GB")
     return proc_mem, sys_mem
 
-# Spark Session with memory optimization
+def clear_memory_and_report(label=""):
+    """Clear memory and report freed amount.
+    
+    Args:
+        label: Label for memory clearing operation.
+        
+    Returns:
+        tuple: (freed_rss_mb, freed_sys_gb)
+    """
+    print(f"\n   Clearing memory [{label}]...")
+    
+    before_proc, before_sys = get_memory_usage(), get_system_memory()
+    
+    gc.collect()
+    gc.collect()
+    gc.collect()
+    
+    try:
+        import tensorflow as tf
+        tf.keras.backend.clear_session()
+    except Exception:
+        pass
+    
+    gc.collect()
+    
+    after_proc, after_sys = get_memory_usage(), get_system_memory()
+    
+    freed_rss = before_proc['rss'] - after_proc['rss']
+    freed_sys = after_sys['available'] - before_sys['available']
+    
+    print(f"   Memory cleared:")
+    print(f"      Process freed: {freed_rss:.1f}MB (RSS: {before_proc['rss']:.1f}MB -> {after_proc['rss']:.1f}MB)")
+    print(f"      System freed:  {freed_sys*1024:.1f}MB (Available: {before_sys['available']:.2f}GB -> {after_sys['available']:.2f}GB)")
+    
+    return freed_rss, freed_sys
+
+# ============================================================================
+# MAIN SCRIPT
+# ============================================================================
+
+print("=" * 80)
+print("FEATURE EXTRACTION - TENSORFLOW MOBILENETV2 (MEMORY OPTIMIZED)")
+print("=" * 80)
+
+print_memory_status("STARTUP")
+
+# ============================================================================
+# SPARK SESSION - Conservative memory settings
+# ============================================================================
 
 spark = SparkSession.builder \
-    .appName("FeatureExtraction_MobileNetV2") \
-    .config("spark.driver.memory", "2g") \
+    .appName("FeatureExtraction_MobileNetV2_MemoryOptimized") \
+    .config("spark.driver.memory", "3g") \
     .config("spark.executor.memory", "2g") \
-    .config("spark.executor.cores", "2") \
-    .config("spark.default.parallelism", "16") \
-    .config("spark.sql.shuffle.partitions", "16") \
-    .config("spark.driver.maxResultSize", "512m") \
+    .config("spark.driver.maxResultSize", "1g") \
+    .config("spark.sql.shuffle.partitions", "4") \
     .config("spark.eventLog.enabled", "true") \
     .config("spark.eventLog.dir", "hdfs://namenode:8020/spark-logs") \
-    .config("spark.history.fs.logDirectory", "hdfs://namenode:8020/spark-logs") \
-    .config("spark.memory.fraction", "0.5") \
-    .config("spark.memory.storageFraction", "0.2") \
-    .config("spark.cleaner.periodicGC.interval", "1min") \
-    .config("spark.sql.autoBroadcastJoinThreshold", "-1") \
-    .config("spark.rpc.message.maxSize", "256") \
     .getOrCreate()
 
 spark.sparkContext.setLogLevel("WARN")
-print("Spark Session created successfully")
-print_memory_status("   ")
+print("\nSpark Session created")
+print_memory_status("AFTER SPARK")
 
-# Global model loading
-_mobilenet_model = None
+# ============================================================================
+# TENSORFLOW MOBILENETV2 MODEL - Lightweight
+# ============================================================================
 
-def get_mobilenet_model():
-    """Load MobileNetV2 model (lazy loading per executor)."""
-    global _mobilenet_model
-    if _mobilenet_model is None:
-        import torch
-        import torchvision.models as models
-        from torchvision.models import MobileNet_V2_Weights
+print("\nLoading TensorFlow MobileNetV2 model...")
+import tensorflow as tf
+from tensorflow.keras.applications import MobileNetV2
+from tensorflow.keras.applications.mobilenet_v2 import preprocess_input
 
-        print("   Loading MobileNetV2 model...")
-        mem_before = get_process_memory_mb()
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+tf.get_logger().setLevel('ERROR')
 
-        model = models.mobilenet_v2(weights=MobileNet_V2_Weights.IMAGENET1K_V1)
-        model.classifier = torch.nn.Identity()
-        model.eval()
-        model = model.cpu()
+model = MobileNetV2(
+    weights='imagenet',
+    include_top=False,
+    pooling='avg',
+    input_shape=(224, 224, 3)
+)
 
-        _mobilenet_model = model
+print(f"   MobileNetV2 loaded successfully")
+print(f"   Output shape: {model.output_shape} (1280 features)")
+print(f"   Parameters: {model.count_params():,}")
+print_memory_status("AFTER MODEL LOAD")
 
-        mem_after = get_process_memory_mb()
-        print(f"   MobileNetV2 loaded. Memory used: {mem_after - mem_before:.1f} MB")
+# ============================================================================
+# CONFIG
+# ============================================================================
 
-    return _mobilenet_model
+BATCH_SIZE = 1000  # Images per HDFS save batch (smaller = safer)
+TF_BATCH_SIZE = 8  # Images per TF inference (smaller = less memory)
+HDFS_BASE = "hdfs://namenode:8020/user/data"
+OUTPUT_BASE = f"{HDFS_BASE}/features_tf"
 
-def clear_model():
-    """Clear model from memory."""
-    global _mobilenet_model
-    if _mobilenet_model is not None:
-        import torch
-        mem_before = get_process_memory_mb()
+# Dataset configuration
+DATASETS = [
+    # Train REAL: 50K -> 50 batches of 1000
+    {"split": "train", "class": "REAL", "label": 1, "total": 50000, "batch_size": BATCH_SIZE},
+    # Train FAKE: 50K -> 50 batches of 1000
+    {"split": "train", "class": "FAKE", "label": 0, "total": 50000, "batch_size": BATCH_SIZE},
+    # Test REAL: 10K -> 10 batches of 1000
+    {"split": "test", "class": "REAL", "label": 1, "total": 10000, "batch_size": BATCH_SIZE},
+    # Test FAKE: 10K -> 10 batches of 1000
+    {"split": "test", "class": "FAKE", "label": 0, "total": 10000, "batch_size": BATCH_SIZE},
+]
 
-        del _mobilenet_model
-        _mobilenet_model = None
+# ============================================================================
+# FEATURE EXTRACTION FUNCTIONS
+# ============================================================================
 
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-
-        gc.collect()
-
-        mem_after = get_process_memory_mb()
-        print(f"   Model cleared. Memory freed: {mem_before - mem_after:.1f} MB")
-
-def extract_mobilenet_features(image_bytes):
-    """Extract 1280-dim features using MobileNetV2.
+def preprocess_image(image_bytes):
+    """Preprocess single image bytes to array.
     
     Args:
-        image_bytes: Raw image bytes
+        image_bytes: Image data as bytes.
         
     Returns:
-        DenseVector: 1280-dimensional feature vector
+        np.ndarray: Preprocessed image array (224, 224, 3).
     """
     try:
-        import torch
-        import torchvision.transforms as transforms
-
         img = Image.open(BytesIO(image_bytes)).convert('RGB')
+        img = img.resize((224, 224), Image.BILINEAR)
+        arr = np.array(img, dtype=np.float32)
+        del img
+        return arr
+    except Exception:
+        return np.zeros((224, 224, 3), dtype=np.float32)
 
-        preprocess = transforms.Compose([
-            transforms.Resize(256),
-            transforms.CenterCrop(224),
-            transforms.ToTensor(),
-            transforms.Normalize(
-                mean=[0.485, 0.456, 0.406],
-                std=[0.229, 0.224, 0.225]
-            )
-        ])
-
-        img_tensor = preprocess(img).unsqueeze(0)
-
-        model = get_mobilenet_model()
-        with torch.no_grad():
-            features = model(img_tensor)
-
-        features = features.squeeze().numpy()
-
-        del img_tensor, img
-
-        return Vectors.dense(features.tolist())
-
-    except Exception as e:
-        print(f"Error extracting features: {e}")
-        return Vectors.dense([0.0] * 1280)
-
-extract_features_udf = udf(extract_mobilenet_features, VectorUDT())
-
-def force_memory_cleanup(clear_model_flag=False):
-    """Aggressive memory cleanup.
+def extract_features_batch(images_data):
+    """Extract features for a batch of images.
     
     Args:
-        clear_model_flag: If True, clear the loaded model
+        images_data: List of (path, image_bytes) tuples.
         
     Returns:
-        tuple: (memory_before, memory_after, memory_freed)
+        list: List of (path, features_list) tuples.
     """
-    print("\n   Performing memory cleanup...")
-    mem_before = get_process_memory_mb()
-    sys_before = get_system_memory_info()
+    results = []
+    total = len(images_data)
+    
+    for i in range(0, total, TF_BATCH_SIZE):
+        batch_data = images_data[i:i+TF_BATCH_SIZE]
+        
+        batch_arrays = []
+        for path, img_bytes in batch_data:
+            arr = preprocess_image(img_bytes)
+            batch_arrays.append(arr)
+        
+        batch_input = np.stack(batch_arrays)
+        batch_input = preprocess_input(batch_input)
+        
+        del batch_arrays
+        
+        features = model.predict(batch_input, verbose=0, batch_size=TF_BATCH_SIZE)
+        
+        del batch_input
+        
+        for j, (path, _) in enumerate(batch_data):
+            results.append((path, features[j].tolist()))
+        
+        del features
+        
+        if (i + TF_BATCH_SIZE) % 200 == 0 or (i + TF_BATCH_SIZE) >= total:
+            print(f"      Extracted: {min(i+TF_BATCH_SIZE, total)}/{total}")
+            gc.collect()
+    
+    return results
 
-    spark.catalog.clearCache()
-
-    if clear_model_flag:
-        clear_model()
-
-    for i in range(5):
-        collected = gc.collect()
-        if collected == 0:
-            break
-
+def check_batch_exists(output_path):
+    """Check if batch already exists in HDFS.
+    
+    Args:
+        output_path: HDFS path to batch.
+        
+    Returns:
+        bool: True if batch exists and is complete.
+    """
     try:
-        import torch
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        _ = torch.zeros(1)
-        del _
-    except:
-        pass
+        hadoop_conf = spark.sparkContext._jsc.hadoopConfiguration()
+        fs = spark._jvm.org.apache.hadoop.fs.FileSystem.get(
+            spark._jvm.java.net.URI(HDFS_BASE),
+            hadoop_conf
+        )
+        path = spark._jvm.org.apache.hadoop.fs.Path(output_path)
+        exists = fs.exists(path)
+        if exists:
+            success_path = spark._jvm.org.apache.hadoop.fs.Path(output_path + "/_SUCCESS")
+            return fs.exists(success_path)
+        return False
+    except Exception:
+        return False
+# ============================================================================
+# MAIN EXTRACTION LOOP
+# ============================================================================
 
-    time.sleep(3)
+total_batches = sum(ds["total"] // ds["batch_size"] for ds in DATASETS)
+print(f"""
+CONFIGURATION:
+   Output: {OUTPUT_BASE}
+   Batch size: {BATCH_SIZE} images per save
+   TF batch size: {TF_BATCH_SIZE} images per inference
+   Model: MobileNetV2 (1280-dim features, approx 14MB)
+   Total batches: {total_batches}
+
+DATASETS:
+   Train REAL: 50,000 -> {50000//BATCH_SIZE} batches
+   Train FAKE: 50,000 -> {50000//BATCH_SIZE} batches
+   Test REAL:  10,000 -> {10000//BATCH_SIZE} batches
+   Test FAKE:  10,000 -> {10000//BATCH_SIZE} batches
+""")
+
+start_time = time.time()
+total_processed = 0
+total_skipped = 0
+total_errors = 0
+batch_counter = 0
+
+for ds in DATASETS:
+    split = ds["split"]
+    cls = ds["class"]
+    label = ds["label"]
+    batch_size = ds["batch_size"]
+    max_images = ds["total"]
+    
+    input_path = f"{HDFS_BASE}/raw/{split}/{cls}"
+    
+    print(f"\n{'=' * 70}")
+    print(f"DATASET: {split}/{cls} (Label={label})")
+    print(f"   Input: {input_path}")
+    print(f"   Output: {OUTPUT_BASE}/{split}/{cls}/")
+    print("=" * 70)
+    
+    print_memory_status(f"START {split}/{cls}")
+    
+    # List all files once
+    try:
+        print(f"\n   Listing files from HDFS...")
+        files_df = spark.read.format("binaryFile") \
+            .option("pathGlobFilter", "*.jpg") \
+            .option("recursiveFileLookup", "false") \
+            .load(input_path) \
+            .select("path", "content")
+        
+        all_paths = [row.path for row in files_df.select("path").collect()]
+        total_available = min(len(all_paths), max_images)
+        num_batches = (total_available + batch_size - 1) // batch_size
+        
+        print(f"   Found {len(all_paths)} files, will process {total_available}")
+        print(f"   Will create {num_batches} batches of {batch_size}")
+        
+    except Exception as e:
+        print(f"   Error listing files: {e}")
+        continue
+    
+    # Process each batch
+    for batch_num in range(1, num_batches + 1):
+        batch_counter += 1
+        start_idx = (batch_num - 1) * batch_size
+        end_idx = min(batch_num * batch_size, total_available)
+        
+        if start_idx >= total_available:
+            break
+        
+        output_path = f"{OUTPUT_BASE}/{split}/{cls}/batch_{batch_num}"
+        
+        print(f"\n   {'─' * 60}")
+        print(f"   Batch {batch_num}/{num_batches} (Global: {batch_counter}/{total_batches})")
+        print(f"      Range: images {start_idx + 1} - {end_idx}")
+        print(f"      Output: {output_path}")
+        
+        if check_batch_exists(output_path):
+            print(f"      Already exists, skipping")
+            total_skipped += (end_idx - start_idx)
+            continue
+        
+        print_memory_status("BEFORE BATCH")
+        batch_start = time.time()
+        
+        try:
+            batch_paths = all_paths[start_idx:end_idx]
+            actual_batch_size = len(batch_paths)
+            
+            print(f"      Loading {actual_batch_size} images...")
+            batch_df = files_df.filter(col("path").isin(batch_paths))
+            
+            images_data = []
+            for row in batch_df.collect():
+                images_data.append((row.path, bytes(row.content)))
+            
+            print(f"      Loaded {len(images_data)} images to memory")
+            print_memory_status("AFTER LOAD")
+            
+            del batch_df
+            gc.collect()
+            
+            print(f"      Extracting features with MobileNetV2...")
+            features_data = extract_features_batch(images_data)
+            
+            del images_data
+            gc.collect()
+            
+            print(f"      Extracted {len(features_data)} feature vectors")
+            print_memory_status("AFTER EXTRACT")
+            
+            print(f"      Creating DataFrame...")
+            schema = StructType([
+                StructField("path", StringType(), False),
+                StructField("features", VectorUDT(), False),
+                StructField("label", IntegerType(), False)
+            ])
+            
+            rows = [(path, Vectors.dense(feat), label) for path, feat in features_data]
+            
+            del features_data
+            gc.collect()
+            
+            features_df = spark.createDataFrame(rows, schema)
+            
+            del rows
+            gc.collect()
+            
+            print(f"      Saving to HDFS...")
+            features_df.write.mode("overwrite").parquet(output_path)
+            
+            del features_df
+            
+            batch_time = time.time() - batch_start
+            total_processed += actual_batch_size
+            
+            print(f"      Batch complete! {actual_batch_size} images in {batch_time:.1f}s")
+            print(f"      Progress: {total_processed + total_skipped}/{sum(ds['total'] for ds in DATASETS)}")
+            
+            freed_rss, freed_sys = clear_memory_and_report(f"AFTER BATCH {batch_num}")
+            
+            time.sleep(0.5)
+            
+        except Exception as e:
+            print(f"      Error: {e}")
+            import traceback
+            traceback.print_exc()
+            total_errors += 1
+            
+            clear_memory_and_report("AFTER ERROR")
+            continue
+    
+    print(f"\n   Clearing memory after {split}/{cls} dataset...")
+    clear_memory_and_report(f"AFTER DATASET {split}/{cls}")
+    
+    del files_df, all_paths
     gc.collect()
 
-    mem_after = get_process_memory_mb()
-    sys_after = get_system_memory_info()
+# ============================================================================
+# SUMMARY
+# ============================================================================
 
-    memory_freed = mem_before - mem_after
-    system_freed = sys_before['used_gb'] - sys_after['used_gb']
+total_time = time.time() - start_time
 
-    print(f"   Memory cleanup completed.")
-    print(f"   Process Memory: {mem_before:.1f} MB -> {mem_after:.1f} MB (freed: {memory_freed:.1f} MB)")
-    print(f"   System Memory: {sys_before['used_gb']:.2f} GB -> {sys_after['used_gb']:.2f} GB")
+print("\n" + "=" * 80)
+print("EXTRACTION COMPLETE")
+print("=" * 80)
+print(f"""
+   Total processed: {total_processed:,} images
+   Total skipped:   {total_skipped:,} images (already existed)
+   Total errors:    {total_errors}
+   Total time:      {total_time/60:.1f} minutes
+   Output:          {OUTPUT_BASE}/
+""")
 
-    return mem_before, mem_after, memory_freed
+print_memory_status("FINAL")
 
-def process_batch(dataset_type, class_label, df_batch, batch_num, label_value, total_batches):
-    """Process one batch of images.
-    
-    Args:
-        dataset_type: 'train' or 'test'
-        class_label: 'REAL' or 'FAKE'
-        df_batch: Spark DataFrame
-        batch_num: Batch number
-        label_value: Label value (0 or 1)
-        total_batches: Total batches
+# Verify output structure
+print("\nVerifying output structure...")
+try:
+    verify_df = spark.read.parquet(f"{OUTPUT_BASE}/train/REAL/batch_1")
+    sample = verify_df.first()
+    if sample:
+        features = sample.features.toArray()
+        print(f"   Sample verification:")
+        print(f"      Path: {sample.path[:50]}...")
+        print(f"      Features dim: {len(features)}")
+        print(f"      Features sum: {np.sum(features):.4f}")
+        print(f"      Features max: {np.max(features):.4f}")
+        print(f"      Features non-zero: {np.count_nonzero(features)}/{len(features)}")
         
-    Returns:
-        tuple: (success: bool, count: int)
-    """
-    print(f"\nProcessing {dataset_type.upper()}/{class_label} Batch {batch_num}/{total_batches}")
-
-    print("MEMORY STATUS BEFORE BATCH:")
-    mem_start, sys_start = print_memory_status("   ")
-
-    hdfs_output = f"hdfs://namenode:8020/user/data/features/{dataset_type}/{class_label}/batch_{batch_num}"
-
-    start_time = time.time()
-
-    try:
-        batch_size = df_batch.count()
-        print(f"Batch size: {batch_size:,} images")
-
-        print("Extracting MobileNetV2 features (1280-dim)...")
-        df_features = df_batch.withColumn("features", extract_features_udf(col("content"))) \
-                              .withColumn("label", lit(label_value)) \
-                              .select("path", "features", "label")
-
-        df_features = df_features.repartition(4)
-
-        print(f"Saving to HDFS: {hdfs_output}")
-        df_features.write.mode("overwrite").parquet(hdfs_output)
-
-        saved_count = spark.read.parquet(hdfs_output).count()
-
-        elapsed = time.time() - start_time
-
-        df_features.unpersist()
-        del df_features
-
-        print("MEMORY STATUS AFTER BATCH:")
-        mem_end, sys_end = print_memory_status("   ")
-
-        mem_used = mem_end - mem_start
-        print(f"Memory used for batch: {mem_used:.1f} MB")
-
-        print("Performing aggressive cleanup...")
-        force_memory_cleanup(clear_model_flag=True)
-
-        cooldown_time = max(10, min(30, int(mem_used / 100) * 5))
-        print(f"Cooldown {cooldown_time}s for system stabilization...")
-        time.sleep(cooldown_time)
-
-        print("FINAL MEMORY STATUS:")
-        print_memory_status("   ")
-
-        if saved_count == batch_size:
-            print(f"SUCCESS: {saved_count:,} samples saved. Time: {elapsed:.1f}s")
-            return True, saved_count
+        if np.sum(features) > 0:
+            print(f"   Features are valid (non-zero)")
         else:
-            print(f"WARNING: Expected {batch_size:,} but saved {saved_count:,}")
-            return saved_count > 0, saved_count
-
-    except Exception as e:
-        print(f"ERROR processing batch: {e}")
-        import traceback
-        traceback.print_exc()
-        force_memory_cleanup(clear_model_flag=True)
-        return False, 0
-
-
-def process_batch(dataset_type, class_label, df_batch, batch_num, label_value, total_batches):
-    """Process one batch of images.
-    
-    Args:
-        dataset_type: 'train' or 'test'
-        class_label: 'REAL' or 'FAKE'
-        df_batch: Spark DataFrame
-        batch_num: Batch number
-        label_value: Label value (0 or 1)
-        total_batches: Total batches
-        
-    Returns:
-        tuple: (success: bool, count: int)
-    """
-    print(f"\nProcessing {dataset_type.upper()}/{class_label} Batch {batch_num}/{total_batches}")
-
-    print("MEMORY STATUS BEFORE BATCH:")
-    mem_start, sys_start = print_memory_status("   ")
-
-    hdfs_output = f"hdfs://namenode:8020/user/data/features/{dataset_type}/{class_label}/batch_{batch_num}"
-
-    start_time = time.time()
-
-    try:
-        batch_size = df_batch.count()
-        print(f"Batch size: {batch_size:,} images")
-
-        print("Extracting MobileNetV2 features (1280-dim)...")
-        df_features = df_batch.withColumn("features", extract_features_udf(col("content"))) \
-                              .withColumn("label", lit(label_value)) \
-                              .select("path", "features", "label")
-
-        df_features = df_features.repartition(4)
-
-        print(f"Saving to HDFS: {hdfs_output}")
-        df_features.write.mode("overwrite").parquet(hdfs_output)
-
-        saved_count = spark.read.parquet(hdfs_output).count()
-
-        elapsed = time.time() - start_time
-
-        df_features.unpersist()
-        del df_features
-
-        print("MEMORY STATUS AFTER BATCH:")
-        mem_end, sys_end = print_memory_status("   ")
-
-        mem_used = mem_end - mem_start
-        print(f"Memory used for batch: {mem_used:.1f} MB")
-
-        print("Performing aggressive cleanup...")
-        force_memory_cleanup(clear_model_flag=True)
-
-        cooldown_time = max(10, min(30, int(mem_used / 100) * 5))
-        print(f"Cooldown {cooldown_time}s for system stabilization...")
-        time.sleep(cooldown_time)
-
-        print("FINAL MEMORY STATUS:")
-        print_memory_status("   ")
-
-        if saved_count == batch_size:
-            print(f"SUCCESS: {saved_count:,} samples saved. Time: {elapsed:.1f}s")
-            return True, saved_count
-        else:
-            print(f"WARNING: Expected {batch_size:,} but saved {saved_count:,}")
-            return saved_count > 0, saved_count
-
-    except Exception as e:
-        print(f"ERROR processing batch: {e}")
-        import traceback
-        traceback.print_exc()
-        force_memory_cleanup(clear_model_flag=True)
-        return False, 0
-
-
-# Main pipeline
-pipeline_start = time.time()
-results = []
-
-print("\n" + "="*80)
-print("STARTING MOBILENETV2 FEATURE EXTRACTION")
-print("Model: MobileNetV2 (14MB) | Output: 1280-dim features")
-print("="*80)
-
-print("\nINITIAL SYSTEM STATUS:")
-print_memory_status("   ")
-
-# TRAIN DATA
-print("\n" + "="*80)
-print("PART 1: TRAINING DATA (100,000 images)")
-print("="*80)
-
-print("\nTRAIN/REAL - Loading 50,000 images...")
-hdfs_real = "hdfs://namenode:8020/user/data/raw/train/REAL"
-
-try:
-    df_real = spark.read.format("binaryFile").load(hdfs_real)
-    df_real = df_real.repartition(20)
-    total_real = df_real.count()
-    print(f"Total REAL: {total_real:,}")
-
-    batches_real = df_real.randomSplit([0.2, 0.2, 0.2, 0.2, 0.2], seed=42)
-
-    for i in range(5):
-        print(f"\nTRAIN/REAL BATCH {i+1}/5")
-        success, count = process_batch('train', 'REAL', batches_real[i], i+1, label_value=1, total_batches=5)
-        results.append(('TRAIN/REAL', i+1, success, count))
-        batches_real[i] = None
-        gc.collect()
-
-    del batches_real
-    del df_real
-    force_memory_cleanup(clear_model_flag=True)
-    print("\nTRAIN/REAL completed - Memory released")
-
+            print(f"   Warning: Features are all zeros")
 except Exception as e:
-    print(f"Error processing TRAIN/REAL: {e}")
-    import traceback
-    traceback.print_exc()
-
-print("\nTRAIN/FAKE - Loading 50,000 images...")
-hdfs_fake = "hdfs://namenode:8020/user/data/raw/train/FAKE"
-
-try:
-    df_fake = spark.read.format("binaryFile").load(hdfs_fake)
-    df_fake = df_fake.repartition(20)
-    total_fake = df_fake.count()
-    print(f"Total FAKE: {total_fake:,}")
-
-    batches_fake = df_fake.randomSplit([0.2, 0.2, 0.2, 0.2, 0.2], seed=42)
-
-    for i in range(5):
-        print(f"\nTRAIN/FAKE BATCH {i+1}/5")
-        success, count = process_batch('train', 'FAKE', batches_fake[i], i+1, label_value=0, total_batches=5)
-        results.append(('TRAIN/FAKE', i+1, success, count))
-        batches_fake[i] = None
-        gc.collect()
-
-    del batches_fake
-    del df_fake
-    force_memory_cleanup(clear_model_flag=True)
-    print("\nTRAIN/FAKE completed - Memory released")
-
-except Exception as e:
-    print(f"Error processing TRAIN/FAKE: {e}")
-    import traceback
-    traceback.print_exc()
-
-# TEST DATA
-print("\n" + "="*80)
-print("PART 2: TEST DATA (20,000 images)")
-print("="*80)
-
-print("\nTEST/REAL - Loading 10,000 images...")
-hdfs_test_real = "hdfs://namenode:8020/user/data/raw/test/REAL"
-
-try:
-    df_test_real = spark.read.format("binaryFile").load(hdfs_test_real)
-    df_test_real = df_test_real.repartition(8)
-    success, count = process_batch('test', 'REAL', df_test_real, 1, label_value=1, total_batches=1)
-    results.append(('TEST/REAL', 1, success, count))
-    del df_test_real
-    force_memory_cleanup(clear_model_flag=True)
-except Exception as e:
-    print(f"Error processing TEST/REAL: {e}")
-    results.append(('TEST/REAL', 1, False, 0))
-
-print("\nTEST/FAKE - Loading 10,000 images...")
-hdfs_test_fake = "hdfs://namenode:8020/user/data/raw/test/FAKE"
-
-try:
-    df_test_fake = spark.read.format("binaryFile").load(hdfs_test_fake)
-    df_test_fake = df_test_fake.repartition(8)
-    success, count = process_batch('test', 'FAKE', df_test_fake, 1, label_value=0, total_batches=1)
-    results.append(('TEST/FAKE', 1, success, count))
-    del df_test_fake
-    force_memory_cleanup(clear_model_flag=True)
-except Exception as e:
-    print(f"Error processing TEST/FAKE: {e}")
-    results.append(('TEST/FAKE', 1, False, 0))
-
-# Summary
-pipeline_elapsed = time.time() - pipeline_start
-
-print("\n" + "="*80)
-print("FINAL SUMMARY - MOBILENETV2 FEATURE EXTRACTION")
-print("="*80)
-
-success_count = sum(1 for _, _, s, _ in results if s)
-total_batches = len(results)
-total_samples = sum(c for _, _, _, c in results)
-
-print(f"\nSuccessful: {success_count}/{total_batches} batches")
-print(f"Total samples: {total_samples:,}")
-print(f"Total time: {pipeline_elapsed/60:.2f} minutes")
-print(f"Feature dimension: 1280 (MobileNetV2)")
-
-print("\nResults by batch:")
-for dataset, batch, success, count in results:
-    status = "OK" if success else "FAILED"
-    print(f"   [{status}] {dataset} Batch {batch}: {count:,} samples")
-
-print("\nFINAL MEMORY STATUS:")
-print_memory_status("   ")
-
-if success_count == total_batches:
-    print("\n" + "="*80)
-    print("ALL BATCHES COMPLETED - MOBILENETV2 FEATURES EXTRACTED")
-    print(f"Total: {total_samples:,} images -> 1280-dim features")
-    print("="*80)
-else:
-    print("\n" + "="*80)
-    print(f"COMPLETED WITH {total_batches - success_count} FAILED BATCHES")
-    print("="*80)
+    print(f"   Could not verify: {e}")
 
 spark.stop()
-print("\nSpark stopped. Done!")
-
+print("\nSpark stopped. Feature extraction complete!")

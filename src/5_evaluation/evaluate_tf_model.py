@@ -31,7 +31,7 @@ print("\n" + "="*80)
 print("STEP 1: Loading Test Predictions")
 print("="*80)
 
-test_pred_path = f"{RESULTS_BASE}/test_predictions"
+test_pred_path = f"{RESULTS_BASE}/test_predictions_tuned"
 print(f"Loading from: {test_pred_path}")
 
 df_predictions = spark.read.parquet(test_pred_path)
@@ -202,10 +202,10 @@ metrics_summary = [
     Row(metric="macro_precision", value=float(macro_precision)),
     Row(metric="macro_recall", value=float(macro_recall)),
     Row(metric="macro_f1", value=float(macro_f1)),
-    Row(metric="tp", value=int(tp)),
-    Row(metric="tn", value=int(tn)),
-    Row(metric="fp", value=int(fp)),
-    Row(metric="fn", value=int(fn)),
+    Row(metric="tp", value=float(tp)),
+    Row(metric="tn", value=float(tn)),
+    Row(metric="fp", value=float(fp)),
+    Row(metric="fn", value=float(fn)),
 ]
 
 if auc_score is not None:
@@ -232,99 +232,3 @@ print("\n" + "="*80)
 
 spark.stop()
 print("Spark session stopped.")
-
-    Row(metric="macro_f1", value=float(macro_f1)),
-    Row(metric="precision_real", value=float(precision_real)),
-    Row(metric="recall_real", value=float(recall_real)),
-    Row(metric="f1_real", value=float(f1_real)),
-    Row(metric="precision_fake", value=float(precision_fake)),
-    Row(metric="recall_fake", value=float(recall_fake)),
-    Row(metric="f1_fake", value=float(f1_fake)),
-    Row(metric="true_positive", value=float(tp)),
-    Row(metric="true_negative", value=float(tn)),
-    Row(metric="false_positive", value=float(fp)),
-    Row(metric="false_negative", value=float(fn)),
-    Row(metric="total_samples", value=float(total_samples)),
-]
-
-if auc_score is not None:
-    metrics_summary.append(Row(metric="auc_roc", value=float(auc_score)))
-
-df_eval_metrics = spark.createDataFrame(metrics_summary)
-eval_metrics_path = f"{RESULTS_BASE}/evaluation_metrics"
-df_eval_metrics.write.mode("overwrite").parquet(eval_metrics_path)
-print(f"✅ Evaluation metrics saved to: {eval_metrics_path}")
-
-# Save confusion matrix
-confusion_matrix = [
-    Row(actual="FAKE", predicted="FAKE", count=int(tn)),
-    Row(actual="FAKE", predicted="REAL", count=int(fp)),
-    Row(actual="REAL", predicted="FAKE", count=int(fn)),
-    Row(actual="REAL", predicted="REAL", count=int(tp)),
-]
-df_confusion = spark.createDataFrame(confusion_matrix)
-confusion_path = f"{RESULTS_BASE}/confusion_matrix"
-df_confusion.write.mode("overwrite").parquet(confusion_path)
-print(f"✅ Confusion matrix saved to: {confusion_path}")
-
-# ============================================================================
-# FINAL SUMMARY
-# ============================================================================
-
-eval_time = time.time() - eval_start
-
-print("\n" + "="*80)
-print("🏁 EVALUATION COMPLETE")
-print("="*80)
-
-print(f"\n⏱️  Evaluation time: {eval_time:.1f}s")
-
-print("\n" + "="*80)
-print("📊 FINAL EVALUATION REPORT")
-print("="*80)
-
-print(f"""
-┌─────────────────────────────────────────────────────────────┐
-│                    MODEL PERFORMANCE                        │
-├─────────────────────────────────────────────────────────────┤
-│  Test Samples:        {total_samples:>10,}                          │
-├─────────────────────────────────────────────────────────────┤
-│  Accuracy:            {accuracy*100:>10.2f}%                          │
-│  Precision:           {weighted_precision*100:>10.2f}%                          │
-│  Recall:              {weighted_recall*100:>10.2f}%                          │
-│  F1-Score:            {weighted_f1*100:>10.2f}%                          │
-│  AUC-ROC:             {(auc_score*100 if auc_score else 0):>10.2f}%                          │
-├─────────────────────────────────────────────────────────────┤
-│                    CONFUSION MATRIX                         │
-├─────────────────────────────────────────────────────────────┤
-│                        Predicted                            │
-│                    FAKE        REAL                         │
-│  Actual FAKE     {tn:>6,}      {fp:>6,}                         │
-│         REAL     {fn:>6,}      {tp:>6,}                         │
-├─────────────────────────────────────────────────────────────┤
-│  ✅ Correct:      {tp+tn:>10,} ({(tp+tn)/total_samples*100:.1f}%)                     │
-│  ❌ Errors:       {fp+fn:>10,} ({(fp+fn)/total_samples*100:.1f}%)                      │
-└─────────────────────────────────────────────────────────────┘
-""")
-
-# Performance assessment
-print("\n📈 ASSESSMENT:")
-if accuracy >= 0.90:
-    print("   🌟 EXCELLENT! Model achieves 90%+ accuracy!")
-elif accuracy >= 0.85:
-    print("   ✅ GOOD! Model performs well with 85%+ accuracy.")
-elif accuracy >= 0.75:
-    print("   ⚠️ MODERATE. Model may benefit from more training data or tuning.")
-else:
-    print("   ❌ NEEDS IMPROVEMENT. Consider feature engineering or different model.")
-
-print("\n" + "="*80)
-print("📁 Results saved to HDFS:")
-print(f"   - Evaluation metrics: {eval_metrics_path}")
-print(f"   - Confusion matrix: {confusion_path}")
-print("="*80)
-
-# Cleanup
-df_predictions.unpersist()
-spark.stop()
-print("\n✅ Spark session stopped.")

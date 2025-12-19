@@ -13,7 +13,7 @@ param(
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $srcPath = Join-Path $projectRoot "src"
 $uploadScript = Join-Path $srcPath "1_ingestion\upload_to_hdfs.py"
-$extractScript = Join-Path $srcPath "2_feature_extraction\extract_mobilenetv2_optimized.py"
+$extractScript = Join-Path $srcPath "2_feature_extraction\extract_mobilenetv2_features.py"
 $trainScript = Join-Path $srcPath "4_ml_training\ml_training_tf_features.py"
 $evalScript = Join-Path $srcPath "5_evaluation\evaluate_tf_model.py"
 
@@ -97,7 +97,10 @@ if (-not $SkipFeatureExtraction) {
     }
     
     Execute-Command "Step 2d: Running feature extraction" {
-        docker exec spark-master /opt/spark/bin/spark-submit --master local[2] --driver-memory 3g /app/src/2_feature_extraction/extract_mobilenetv2_optimized.py
+        docker exec spark-master /opt/spark/bin/spark-submit --master local[2] --driver-memory 3g `
+            --conf spark.eventLog.enabled=true `
+            --conf spark.eventLog.dir=hdfs://namenode:8020/spark-logs `
+            /app/src/2_feature_extraction/extract_mobilenetv2_features.py
     }
 } else {
     Write-Step "Step 2: Skipped (Feature Extraction)"
@@ -114,7 +117,10 @@ if (-not $SkipTraining) {
     }
     
     Execute-Command "Step 3c: Running ML training" {
-        docker exec spark-master /opt/spark/bin/spark-submit --master local[2] --driver-memory 3g /app/src/4_ml_training/ml_training_tf_features.py
+        docker exec spark-master /opt/spark/bin/spark-submit --master local[2] --driver-memory 3g `
+            --conf spark.eventLog.enabled=true `
+            --conf spark.eventLog.dir=hdfs://namenode:8020/spark-logs `
+            /app/src/4_ml_training/ml_training_tf_features.py
     }
 } else {
     Write-Step "Step 3: Skipped (Training)"
@@ -131,7 +137,10 @@ if (-not $SkipEvaluation) {
     }
     
     Execute-Command "Step 4c: Running model evaluation" {
-        docker exec spark-master /opt/spark/bin/spark-submit --master local[2] --driver-memory 3g /app/src/5_evaluation/evaluate_tf_model.py
+        docker exec spark-master /opt/spark/bin/spark-submit --master local[2] --driver-memory 3g `
+            --conf spark.eventLog.enabled=true `
+            --conf spark.eventLog.dir=hdfs://namenode:8020/spark-logs `
+            /app/src/5_evaluation/evaluate_tf_model.py
     }
 } else {
     Write-Step "Step 4: Skipped (Evaluation)"
