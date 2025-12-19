@@ -95,7 +95,7 @@ all_data = []
 total_samples = 0
 
 for batch_id in range(1, NUM_TRAIN_BATCHES + 1):
-    print(f"\n📦 Loading Batch {batch_id}/{NUM_TRAIN_BATCHES}...")
+    print(f"\nLoading Batch {batch_id}/{NUM_TRAIN_BATCHES}...")
     
     try:
         real_path = f"{FEATURES_BASE}/train/REAL/batch_{batch_id}"
@@ -113,12 +113,12 @@ for batch_id in range(1, NUM_TRAIN_BATCHES + 1):
         
         batch_total = real_count + fake_count
         total_samples += batch_total
-        print(f"   ✅ REAL: {real_count:,} | FAKE: {fake_count:,} | Total: {batch_total:,}")
+        print(f"   REAL: {real_count:,} | FAKE: {fake_count:,} | Total: {batch_total:,}")
         
     except Exception as e:
-        print(f"   ❌ Error loading batch {batch_id}: {e}")
+        print(f"   Error loading batch {batch_id}: {e}")
 
-print(f"\n🔗 Combining {len(all_data)} batches...")
+print(f"\nCombining {len(all_data)} batches...")
 df_full = all_data[0]
 for df in all_data[1:]:
     df_full = df_full.union(df)
@@ -126,10 +126,10 @@ for df in all_data[1:]:
 df_full = df_full.repartition(16).cache()
 actual_count = df_full.count()
 
-print(f"\n✅ Total loaded: {actual_count:,} samples")
+print(f"\nTotal loaded: {actual_count:,} samples")
 
 # Verify feature quality
-print("\n🔍 Verifying feature quality...")
+print("\nVerifying feature quality...")
 sample = df_full.select("features", "label").take(3)
 for i, row in enumerate(sample):
     feat_arr = row.features.toArray()
@@ -143,7 +143,7 @@ for i, row in enumerate(sample):
 # ============================================================================
 
 print("\n" + "="*80)
-print("📊 STEP 2: Train/Validation Split")
+print("STEP 2: Train/Validation Split")
 print("="*80)
 
 df_train, df_val = df_full.randomSplit([1-VALIDATION_RATIO, VALIDATION_RATIO], seed=SEED)
@@ -153,11 +153,11 @@ df_val = df_val.cache()
 train_count = df_train.count()
 val_count = df_val.count()
 
-print(f"✅ Training: {train_count:,} samples")
-print(f"✅ Validation: {val_count:,} samples")
+print(f"Training: {train_count:,} samples")
+print(f"Validation: {val_count:,} samples")
 
 train_dist = df_train.groupBy("label").count().collect()
-print("\n📊 Training class distribution:")
+print("\nTraining class distribution:")
 for row in train_dist:
     label_name = "REAL" if row["label"] == 1 else "FAKE"
     pct = 100 * row["count"] / train_count
@@ -172,10 +172,10 @@ force_cleanup()
 # ============================================================================
 
 print("\n" + "="*80)
-print("📈 STEP 3: Training Logistic Regression (Tuned Hyperparameters)")
+print("STEP 3: Training Logistic Regression (Tuned Hyperparameters)")
 print("="*80)
 
-print("\n🔧 Hyperparameters:")
+print("\nHyperparameters:")
 for k, v in LR_PARAMS.items():
     print(f"   - {k}: {v}")
 
@@ -189,14 +189,14 @@ lr = LogisticRegression(
     **LR_PARAMS
 )
 
-print("\n⏳ Training model...")
+print("\nTraining model...")
 model = lr.fit(df_train)
 
 train_time = time.time() - train_start
-print(f"✅ Training completed in {train_time:.1f}s")
+print(f"Training completed in {train_time:.1f}s")
 
 # Model info
-print(f"\n📊 Model Info:")
+print(f"\nModel Info:")
 print(f"   - Iterations: {model.summary.totalIterations}")
 print(f"   - Objective History (last 5): {model.summary.objectiveHistory[-5:]}")
 
@@ -205,7 +205,7 @@ print(f"   - Objective History (last 5): {model.summary.objectiveHistory[-5:]}")
 # ============================================================================
 
 print("\n" + "="*80)
-print("📊 STEP 4: Validation Evaluation")
+print("STEP 4: Validation Evaluation")
 print("="*80)
 
 predictions = model.transform(df_val)
@@ -225,7 +225,7 @@ precision = evaluator_prec.evaluate(predictions)
 recall = evaluator_rec.evaluate(predictions)
 f1 = evaluator_f1.evaluate(predictions)
 
-print(f"\n🎯 Validation Metrics:")
+print(f"\nValidation Metrics:")
 print(f"   Accuracy:  {accuracy*100:.2f}%")
 print(f"   Precision: {precision*100:.2f}%")
 print(f"   Recall:    {recall*100:.2f}%")
@@ -237,7 +237,7 @@ tn = predictions.filter((col("label") == 0) & (col("prediction") == 0)).count()
 fp = predictions.filter((col("label") == 0) & (col("prediction") == 1)).count()
 fn = predictions.filter((col("label") == 1) & (col("prediction") == 0)).count()
 
-print(f"\n📊 Confusion Matrix:")
+print(f"\nConfusion Matrix:")
 print(f"   TP (REAL→REAL): {tp:,}")
 print(f"   TN (FAKE→FAKE): {tn:,}")
 print(f"   FP (FAKE→REAL): {fp:,}")
@@ -248,10 +248,10 @@ print(f"   FN (REAL→FAKE): {fn:,}")
 # ============================================================================
 
 print("\n" + "="*80)
-print("🧪 STEP 5: Test Set Evaluation")
+print("STEP 5: Test Set Evaluation")
 print("="*80)
 
-print("📂 Loading test data...")
+print("Loading test data...")
 test_data = []
 
 for batch_id in range(1, 11):
@@ -266,7 +266,7 @@ for batch_id in range(1, 11):
         test_data.append(df_test_fake)
         
     except Exception as e:
-        print(f"   ⚠️ Error loading test batch {batch_id}: {e}")
+        print(f"   Error loading test batch {batch_id}: {e}")
 
 df_test = test_data[0]
 for df in test_data[1:]:
@@ -274,7 +274,7 @@ for df in test_data[1:]:
 
 df_test = df_test.repartition(8).cache()
 test_count = df_test.count()
-print(f"✅ Test data loaded: {test_count:,} samples")
+print(f"Test data loaded: {test_count:,} samples")
 
 test_predictions = model.transform(df_test)
 test_predictions = test_predictions.cache()
@@ -284,7 +284,7 @@ test_precision = evaluator_prec.evaluate(test_predictions)
 test_recall = evaluator_rec.evaluate(test_predictions)
 test_f1 = evaluator_f1.evaluate(test_predictions)
 
-print(f"\n🎯 Test Metrics:")
+print(f"\nTest Metrics:")
 print(f"   Accuracy:  {test_accuracy*100:.2f}%")
 print(f"   Precision: {test_precision*100:.2f}%")
 print(f"   Recall:    {test_recall*100:.2f}%")
@@ -296,7 +296,7 @@ test_tn = test_predictions.filter((col("label") == 0) & (col("prediction") == 0)
 test_fp = test_predictions.filter((col("label") == 0) & (col("prediction") == 1)).count()
 test_fn = test_predictions.filter((col("label") == 1) & (col("prediction") == 0)).count()
 
-print(f"\n📊 Test Confusion Matrix:")
+print(f"\nTest Confusion Matrix:")
 print(f"   TP (REAL→REAL): {test_tp:,}")
 print(f"   TN (FAKE→FAKE): {test_tn:,}")
 print(f"   FP (FAKE→REAL): {test_fp:,}")
@@ -307,7 +307,7 @@ print(f"   FN (REAL→FAKE): {test_fn:,}")
 # ============================================================================
 
 print("\n" + "="*80)
-print("💾 STEP 6: Saving Results")
+print("STEP 6: Saving Results")
 print("="*80)
 
 metrics_data = [
@@ -328,14 +328,14 @@ metrics_data = [
 df_metrics = spark.createDataFrame(metrics_data)
 metrics_path = f"{RESULTS_BASE}/metrics_tuned"
 df_metrics.write.mode("overwrite").parquet(metrics_path)
-print(f"✅ Metrics saved to: {metrics_path}")
+print(f"Metrics saved to: {metrics_path}")
 
 test_pred_path = f"{RESULTS_BASE}/test_predictions_tuned"
 test_predictions.select(
     "label", "prediction",
     vector_to_array("probability")[1].alias("prob_real")
 ).write.mode("overwrite").parquet(test_pred_path)
-print(f"✅ Test predictions saved to: {test_pred_path}")
+print(f"Test predictions saved to: {test_pred_path}")
 
 # ============================================================================
 # FINAL SUMMARY
@@ -344,32 +344,32 @@ print(f"✅ Test predictions saved to: {test_pred_path}")
 total_time = time.time() - pipeline_start
 
 print("\n" + "="*80)
-print("🏁 TRAINING COMPLETE (TUNED HYPERPARAM)")
+print("TRAINING COMPLETE (TUNED HYPERPARAM)")
 print("="*80)
 
-print(f"\n⏱️  Total time: {total_time/60:.2f} minutes")
-print(f"\n📊 Dataset:")
+print(f"\nTotal time: {total_time/60:.2f} minutes")
+print(f"\nDataset:")
 print(f"   - Training: {train_count:,} samples ({NUM_TRAIN_BATCHES} batches)")
 print(f"   - Validation: {val_count:,} samples")
 print(f"   - Test: {test_count:,} samples")
 
-print(f"\n🎯 VALIDATION RESULTS:")
+print(f"\nVALIDATION RESULTS:")
 print(f"   Accuracy:  {accuracy*100:.2f}%")
 print(f"   F1-Score:  {f1*100:.2f}%")
 
-print(f"\n🎯 TEST RESULTS:")
+print(f"\nTEST RESULTS:")
 print(f"   Accuracy:  {test_accuracy*100:.2f}%")
 print(f"   F1-Score:  {test_f1*100:.2f}%")
 
 print("\n" + "="*80)
 if test_accuracy > 0.90:
-    print("🎉 EXCELLENT! Đạt >90%")
+    print("EXCELLENT! Đạt >90%")
 elif test_accuracy > 0.88:
-    print("✅ VERY GOOD! Cải thiện so với baseline")
+    print("VERY GOOD! Cải thiện so với baseline")
 elif test_accuracy > 0.7:
-    print("✅ Model performs WELL!")
+    print("Model performs WELL!")
 else:
-    print("⚠️ Có thể thử regParam nhỏ hơn nữa")
+    print("Có thể thử regParam nhỏ hơn nữa")
 print("="*80)
 
 # Cleanup
@@ -380,4 +380,4 @@ df_val.unpersist()
 df_test.unpersist()
 
 spark.stop()
-print("\n✅ Spark session stopped.")
+print("\nSpark session stopped.")

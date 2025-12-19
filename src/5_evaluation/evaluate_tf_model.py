@@ -1,18 +1,28 @@
-#!/usr/bin/env python3
-"""Model Evaluation Script.
 
-Complete evaluation with metrics calculation and error analysis.
+#!/usr/bin/env python3
+"""
+Model Evaluation Script.
+
+Script này thực hiện đánh giá mô hình: tính toán các chỉ số (accuracy, precision, recall, F1, AUC...), phân tích lỗi, lưu kết quả ra HDFS.
 """
 
+
+# Import các thư viện Spark và Python cần thiết
 from pyspark.sql import SparkSession, Row
 from pyspark.sql.functions import col, when, count, sum as spark_sum
 from pyspark.ml.evaluation import MulticlassClassificationEvaluator, BinaryClassificationEvaluator
 import time
 
+
+# =============================
+# BẮT ĐẦU ĐÁNH GIÁ MÔ HÌNH
+# =============================
 print("="*80)
 print("MODEL EVALUATION")
 print("="*80)
 
+
+# Khởi tạo SparkSession với cấu hình bộ nhớ phù hợp
 spark = SparkSession.builder \
     .appName("Model_Evaluation") \
     .config("spark.driver.memory", "2g") \
@@ -22,11 +32,17 @@ spark = SparkSession.builder \
     .getOrCreate()
 
 spark.sparkContext.setLogLevel("WARN")
-eval_start = time.time()
+eval_start = time.time()  # Đánh dấu thời gian bắt đầu đánh giá
 
+
+# Đường dẫn HDFS cho dữ liệu và kết quả
 HDFS_BASE = "hdfs://namenode:8020/user/data"
 RESULTS_BASE = f"{HDFS_BASE}/results_tf"
 
+
+# =============================
+# BƯỚC 1: Load dự đoán từ file parquet
+# =============================
 print("\n" + "="*80)
 print("STEP 1: Loading Test Predictions")
 print("="*80)
@@ -34,6 +50,7 @@ print("="*80)
 test_pred_path = f"{RESULTS_BASE}/test_predictions_tuned"
 print(f"Loading from: {test_pred_path}")
 
+# Đọc file parquet chứa dự đoán test
 df_predictions = spark.read.parquet(test_pred_path)
 df_predictions = df_predictions.cache()
 
@@ -46,6 +63,10 @@ df_predictions.printSchema()
 print("\nSample predictions:")
 df_predictions.show(10, truncate=False)
 
+
+# =============================
+# BƯỚC 2: Thống kê phân phối nhãn và dự đoán
+# =============================
 print("\n" + "="*80)
 print("STEP 2: Calculating Metrics")
 print("="*80)
@@ -65,14 +86,18 @@ for row in pred_dist:
     pct = 100 * row["count"] / total_samples
     print(f"   {pred_name} (pred={int(row['prediction'])}): {row['count']:,} ({pct:.1f}%)")
 
+
+# =============================
+# BƯỚC 3: Tính confusion matrix (TP, TN, FP, FN)
+# =============================
 print("\n" + "="*80)
 print("STEP 3: Confusion Matrix")
 print("="*80)
 
-tp = df_predictions.filter((col("label") == 1) & (col("prediction") == 1)).count()
-tn = df_predictions.filter((col("label") == 0) & (col("prediction") == 0)).count()
-fp = df_predictions.filter((col("label") == 0) & (col("prediction") == 1)).count()
-fn = df_predictions.filter((col("label") == 1) & (col("prediction") == 0)).count()
+tp = df_predictions.filter((col("label") == 1) & (col("prediction") == 1)).count()  # True Positive
+tn = df_predictions.filter((col("label") == 0) & (col("prediction") == 0)).count()  # True Negative
+fp = df_predictions.filter((col("label") == 0) & (col("prediction") == 1)).count()  # False Positive
+fn = df_predictions.filter((col("label") == 1) & (col("prediction") == 0)).count()  # False Negative
 
 print("\n                    Predicted")
 print("                  FAKE    REAL")
@@ -85,6 +110,10 @@ print(f"   True Negative (FAKE->FAKE):   {tn:,}")
 print(f"   False Positive (FAKE->REAL):  {fp:,}")
 print(f"   False Negative (REAL->FAKE):  {fn:,}")
 
+
+# =============================
+# BƯỚC 4: Tính các chỉ số đánh giá (accuracy, precision, recall, F1, macro/weighted...)
+# =============================
 print("\n" + "="*80)
 print("STEP 4: Performance Metrics")
 print("="*80)
@@ -128,12 +157,17 @@ print(f"      F1-Score:  {f1_fake*100:.2f}%")
 print(f"      Support:   {total_fake:,}")
 
 
+
+# =============================
+# BƯỚC 5: Tính AUC-ROC và AUC-PR nếu có xác suất dự đoán
+# =============================
 print("\n" + "="*80)
 print("STEP 5: AUC-ROC Score")
 print("="*80)
 
 auc_score = None
 if "prob_real" in df_predictions.columns:
+    # Nếu có cột xác suất dự đoán, tính AUC-ROC và AUC-PR
     df_for_auc = df_predictions.withColumn("rawPrediction", col("prob_real"))
 
     evaluator_auc = BinaryClassificationEvaluator(
@@ -162,12 +196,17 @@ if "prob_real" in df_predictions.columns:
 else:
     print("   Probability column not found, skipping AUC calculation")
 
+
+# =============================
+# BƯỚC 6: Phân tích lỗi (Error Analysis)
+# =============================
 print("\n" + "="*80)
 print("STEP 6: Error Analysis")
 print("="*80)
 
 print(f"\nFalse Positives (FAKE->REAL): {fp:,}")
 if "prob_real" in df_predictions.columns:
+    # Phân tích confidence của các mẫu FP
     fp_samples = df_predictions.filter(
         (col("label") == 0) & (col("prediction") == 1)
     ).select("prob_real")
@@ -180,6 +219,7 @@ if "prob_real" in df_predictions.columns:
 
 print(f"\nFalse Negatives (REAL->FAKE): {fn:,}")
 if "prob_real" in df_predictions.columns:
+    # Phân tích confidence của các mẫu FN
     fn_samples = df_predictions.filter(
         (col("label") == 1) & (col("prediction") == 0)
     ).select("prob_real")
@@ -190,6 +230,10 @@ if "prob_real" in df_predictions.columns:
         }).collect()[0]
         print(f"   Average confidence: {fn_stats[0]*100:.2f}%")
 
+
+# =============================
+# BƯỚC 7: Lưu kết quả đánh giá ra HDFS (parquet)
+# =============================
 print("\n" + "="*80)
 print("STEP 7: Saving Evaluation Report")
 print("="*80)
@@ -216,6 +260,11 @@ metrics_path = f"{RESULTS_BASE}/evaluation_metrics"
 df_metrics.write.mode("overwrite").parquet(metrics_path)
 print(f"Metrics saved to: {metrics_path}")
 
+spark.stop()
+
+# =============================
+# KẾT THÚC: In tổng kết và dừng Spark
+# =============================
 eval_time = time.time() - eval_start
 
 print("\n" + "="*80)
