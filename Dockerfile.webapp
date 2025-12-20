@@ -1,0 +1,29 @@
+# Dockerfile cho Streamlit Web App
+# Build on top of existing spark image (đã có TF 2.11.0)
+
+FROM spark-deepfake-detection:latest
+
+USER root
+
+# Install Python dependencies for webapp
+# Note: protobuf==3.20.3 required for TensorFlow 2.11.0 compatibility
+RUN pip3 install --no-cache-dir \
+    protobuf==3.20.3 \
+    streamlit==1.28.0 \
+    pyspark==3.3.0 \
+    py4j==0.10.9.5 \
+    scikit-learn==1.3.2 \
+    pandas==2.0.3
+
+# Verify installations
+RUN python3 -c "import streamlit; print('Streamlit:', streamlit.__version__)"
+RUN python3 -c "import pyspark; print('PySpark:', pyspark.__version__)"
+RUN python3 -c "import tensorflow; print('TensorFlow:', tensorflow.__version__)"
+
+WORKDIR /app
+
+# Expose Streamlit port
+EXPOSE 8501
+
+# Default command
+CMD ["streamlit", "run", "src/6_inference/app.py", "--server.port=8501", "--server.address=0.0.0.0"]

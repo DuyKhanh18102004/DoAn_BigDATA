@@ -46,6 +46,8 @@ pipeline_start = time.time()
 HDFS_BASE = "hdfs://namenode:8020/user/data"
 FEATURES_BASE = f"{HDFS_BASE}/features_tf"  # TensorFlow MobileNetV2 features
 RESULTS_BASE = f"{HDFS_BASE}/results_tf"
+MODELS_BASE = "hdfs://namenode:8020/user/models"
+MODEL_PATH = f"{MODELS_BASE}/logistic_regression_tf"
 
 NUM_TRAIN_BATCHES = 50
 VALIDATION_RATIO = 0.2
@@ -303,11 +305,25 @@ print(f"   FP (FAKE→REAL): {test_fp:,}")
 print(f"   FN (REAL→FAKE): {test_fn:,}")
 
 # ============================================================================
-# STEP 6: Save Results
+# STEP 6: Save Model
 # ============================================================================
 
 print("\n" + "="*80)
-print("STEP 6: Saving Results")
+print("💾 STEP 6: Saving Trained Model")
+print("="*80)
+
+try:
+    model.write().overwrite().save(MODEL_PATH)
+    print(f"✅ Model saved to: {MODEL_PATH}")
+except Exception as e:
+    print(f"❌ Error saving model: {e}")
+
+# ============================================================================
+# STEP 7: Save Results
+# ============================================================================
+
+print("\n" + "="*80)
+print("STEP 7: Saving Metrics & Predictions")
 print("="*80)
 
 metrics_data = [

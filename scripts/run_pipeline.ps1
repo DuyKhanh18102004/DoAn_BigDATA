@@ -5,6 +5,7 @@ param(
     [bool]$SkipUpload = $false,
     [bool]$SkipFeatureExtraction = $false,
     [bool]$SkipTraining = $false,
+    [bool]$SkipLoad = $false,
     [bool]$SkipEvaluation = $false,
     [bool]$CleanFeatures = $false
 )
@@ -15,6 +16,7 @@ $srcPath = Join-Path $projectRoot "src"
 $uploadScript = Join-Path $srcPath "1_ingestion\upload_to_hdfs.py"
 $extractScript = Join-Path $srcPath "2_feature_extraction\extract_mobilenetv2_features.py"
 $trainScript = Join-Path $srcPath "4_ml_training\ml_training_tf_features.py"
+$loadScript = Join-Path $srcPath "4_ml_training\load_and_predict.py"
 $evalScript = Join-Path $srcPath "5_evaluation\evaluate_tf_model.py"
 
 $startTime = Get-Date
@@ -126,24 +128,44 @@ if (-not $SkipTraining) {
     Write-Step "Step 3: Skipped (Training)"
 }
 
-# Step 4: Evaluation
+# Step 4: Load and Predict
+if (-not $SkipLoad) {
+    Execute-Command "Step 4a: Creating load/predict directory" {
+        docker exec spark-master mkdir -p /app/src/4_ml_training
+    }
+    
+    Execute-Command "Step 4b: Copying load_and_predict script" {
+        docker cp "$loadScript" spark-master:/app/src/4_ml_training/
+    }
+    
+    Execute-Command "Step 4c: Running model load and predict" {
+        docker exec spark-master /opt/spark/bin/spark-submit --master local[2] --driver-memory 3g `
+            --conf spark.eventLog.enabled=true `
+            --conf spark.eventLog.dir=hdfs://namenode:8020/spark-logs `
+            /app/src/4_ml_training/load_and_predict.py
+    }
+} else {
+    Write-Step "Step 4: Skipped (Load and Predict)"
+}
+
+# Step 5: Evaluation
 if (-not $SkipEvaluation) {
-    Execute-Command "Step 4a: Creating evaluation directory" {
+    Execute-Command "Step 5a: Creating evaluation directory" {
         docker exec spark-master mkdir -p /app/src/5_evaluation
     }
     
-    Execute-Command "Step 4b: Copying evaluation script" {
+    Execute-Command "Step 5b: Copying evaluation script" {
         docker cp "$evalScript" spark-master:/app/src/5_evaluation/
     }
     
-    Execute-Command "Step 4c: Running model evaluation" {
+    Execute-Command "Step 5c: Running model evaluation" {
         docker exec spark-master /opt/spark/bin/spark-submit --master local[2] --driver-memory 3g `
             --conf spark.eventLog.enabled=true `
             --conf spark.eventLog.dir=hdfs://namenode:8020/spark-logs `
             /app/src/5_evaluation/evaluate_tf_model.py
     }
 } else {
-    Write-Step "Step 4: Skipped (Evaluation)"
+    Write-Step "Step 5: Skipped (Evaluation)"
 }
 
 # Summary

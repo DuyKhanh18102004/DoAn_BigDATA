@@ -138,6 +138,35 @@ services:
     networks:
       - bigdata_network
 
+
+  # ================= STREAMLIT WEB APP =================
+  streamlit-app:
+    build:
+      context: .
+      dockerfile: Dockerfile.webapp
+    container_name: streamlit-app
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./src:/app/src
+      - ./docs:/app/docs
+      - ./debug_images:/app/debug_images
+    environment:
+      - SPARK_NAMENODE=namenode
+      - SPARK_MASTER=spark://spark-master:7077
+      - HDFS_NAMENODE=hdfs://namenode:8020
+    depends_on:
+      - spark-master
+      - namenode
+    networks:
+      - bigdata_network
+    deploy:
+      resources:
+        limits:
+          memory: 4g
+        reservations:
+          memory: 2g
+
 networks:
   bigdata_network:
     driver: bridge
